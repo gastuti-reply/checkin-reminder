@@ -18,9 +18,14 @@
 
 ---
 
+> [!NOTE]
+> **Per ora funziona solo su Mac** (macOS 11 o successivi, Apple Silicon e Intel). Windows non è ancora supportato: se vuoi realizzare la versione Windows, le pull request sono benvenute.
+
 ## Perché esiste
 
-Il check-in su [Desk Booking](https://deskbooking.reply.com/home) ("Where are you today?") serve ai colleghi per sapere dove trovarti e all'azienda per gestire spazi e scrivanie. Si fa in dieci secondi, ma è facilissimo dimenticarlo tra un caffè e una call.
+Il check-in su [Desk Booking](https://deskbooking.reply.com/home) ("Where are you today?") è il modo in cui la capogruppo misura quanto usiamo davvero i nostri uffici, e in base a quei dati decide spazi e scrivanie. **Se l'occupazione registrata resta sotto una certa soglia, non possiamo chiedere più spazi**, anche quando in ufficio siamo stretti.
+
+Per questo il check-in va fatto **sempre, ogni volta che siamo in ufficio**. Ogni presenza non registrata è una presenza che per l'azienda non esiste. Si fa in dieci secondi, ma tra un caffè e una call è facilissimo dimenticarlo.
 
 Check-in Reminder se ne ricorda al posto tuo. Lavora in sottofondo, non chiede niente, e interviene solo quando serve: **sei in ufficio e il check-in di oggi non l'hai ancora fatto**.
 
@@ -81,7 +86,7 @@ Poi prova subito:
 checkin-reminder test
 ```
 
-Funziona su macOS 11 o successivi, sia Apple Silicon sia Intel. Non servono permessi di amministratore.
+Funziona solo su Mac, con macOS 11 o successivi, sia Apple Silicon sia Intel. Non servono permessi di amministratore.
 
 <details>
 <summary>Altri modi di installare</summary>

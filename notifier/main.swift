@@ -241,9 +241,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // MARK: notifiche
 
     func registerCategory(snooze: Int) {
-        let open  = UNNotificationAction(identifier: "OPEN", title: "Lo faccio ora", options: [.foreground])
-        let done  = UNNotificationAction(identifier: "DONE", title: "Già fatto, giuro", options: [])
-        let later = UNNotificationAction(identifier: "SNOOZE", title: "Tra \(snooze) min", options: [])
+        let open  = UNNotificationAction(identifier: "OPEN", title: "Apri Desk Booking", options: [.foreground])
+        let done  = UNNotificationAction(identifier: "DONE", title: "Già fatto", options: [])
+        let later = UNNotificationAction(identifier: "SNOOZE", title: "Più tardi", options: [])
         let cat = UNNotificationCategory(identifier: kCategory, actions: [open, done, later],
                                          intentIdentifiers: [], options: [])
         center.setNotificationCategories([cat])

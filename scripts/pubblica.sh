@@ -37,6 +37,8 @@ fi
 say "Push su main"
 git push origin main
 
+[ -x scripts/repo-info.sh ] && scripts/repo-info.sh || true
+
 say "Build di prova su GitHub Actions"
 watch_run main
 

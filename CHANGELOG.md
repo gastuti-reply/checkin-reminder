@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.2
+- Icona: l'app ha un nuovo identificativo (`com.reply.checkin.notifier`), così macOS la registra da zero e mostra l'icona corretta invece di quella generica. Al primo avvio vanno riconcessi i permessi di notifiche e posizione, e lo stile «Avvisi».
+- Testi più asciutti e pulsanti più chiari: "Apri Desk Booking", "Già fatto", "Più tardi".
+
 ## 1.3.1
 - Icona dell'Ispettore ora visibile nella notifica: l'icona è generata con gli strumenti Apple (`iconutil`) e la cache icone di macOS viene aggiornata a ogni installazione.
 - Notifica persistente: l'installer apre le impostazioni per scegliere lo stile «Avvisi» (macOS non permette di imporlo da codice). Nuovo comando `checkin-reminder notifiche`; `status` segnala lo stile Banner.

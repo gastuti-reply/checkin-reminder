@@ -1,117 +1,193 @@
-<img src="notifier/art/icon-1024.png" width="112" align="right" alt="">
+<p align="center">
+  <img src="notifier/art/icon-1024.png" width="140" alt="L'Ispettore del Check-in">
+</p>
 
-# checkin-reminder
+<h1 align="center">Check-in Reminder</h1>
 
-Promemoria per macOS: quando il Mac è sulla rete dell'ufficio Reply, ti ricorda di fare il check-in su [Desk Booking](https://deskbooking.reply.com/home).
+<p align="center">
+  <b>Il tuo Mac si accorge che sei arrivato in ufficio Reply<br>e ti ricorda di fare il check-in su Desk Booking.</b><br>
+  Una notifica, un clic, fatto. Poi ti lascia in pace fino a domani.
+</p>
 
-- Rileva l'ufficio dalla **rete Reply** (dominio DNS `replynet.prv`, Wi-Fi `reply-*`) e dalla **posizione del Mac** rispetto alle [sedi Reply](https://www.reply.com/it/offices) (raggio 250 m). La posizione resta sul Mac.
-- La rete Reply raggiunta **via VPN da casa non conta** come ufficio.
-- Una **notifica in alto a destra** firmata dall'Ispettore del Check-in 🧐, con le azioni **Lo faccio ora** (apre Desk Booking), **Già fatto, giuro**, **Tra 15 min**; un clic sulla notifica apre Desk Booking. Testi a rotazione. Al massimo un check-in al giorno, solo in orario lavorativo. In alternativa, una finestra al centro (`REMIND_STYLE='dialog'`).
-- Si **aggiorna da solo** (controllo giornaliero) o con `checkin-reminder update`.
-- Nessuna dipendenza, nessun `sudo`, nessun permesso di localizzazione: uno script bash e un LaunchAgent utente.
+<p align="center">
+  <a href="../../releases/latest">Ultima versione</a> ·
+  <a href="#installazione-1-minuto">Installa</a> ·
+  <a href="#domande-frequenti">FAQ</a> ·
+  <a href="CHANGELOG.md">Novità</a>
+</p>
 
-## Installazione
+---
 
-**Da download**: scarica lo zip dell'ultima [Release](../../releases), estrailo e lancia:
+## Perché esiste
 
-```bash
-cd checkin-reminder && ./install.sh
-```
+Il check-in su [Desk Booking](https://deskbooking.reply.com/home) ("Where are you today?") serve ai colleghi per sapere dove trovarti e all'azienda per gestire spazi e scrivanie. Si fa in dieci secondi, ma è facilissimo dimenticarlo tra un caffè e una call.
 
-**Da riga di comando**:
+Check-in Reminder se ne ricorda al posto tuo. Lavora in sottofondo, non chiede niente, e interviene solo quando serve: **sei in ufficio e il check-in di oggi non l'hai ancora fatto**.
+
+## Cosa vedi
+
+Quando arrivi in sede compare una notifica in alto a destra:
+
+> **Check-in da fare**
+> Reply Torino · Via Nizza
+> Su Desk Booking non risulti ancora in sede.
+>
+> `Apri Desk Booking` · `Già fatto` · `Più tardi`
+
+| Azione | Cosa succede |
+|---|---|
+| **Apri Desk Booking** (o clic sulla notifica) | Apre Desk Booking. Per oggi hai finito. |
+| **Già fatto** | Nessun'altra notifica fino a domani. |
+| **Più tardi** | Te lo ricorda di nuovo tra 15 minuti. |
+| Ignori la notifica | Torna dopo 15 minuti. |
+
+I testi cambiano a ogni notifica, così non diventano rumore di fondo. Fuori dagli orari di lavoro (lun–ven, 7–20), da casa o in VPN non ricevi nulla.
+
+## Come capisce che sei in ufficio
+
+Usa due indizi, ne basta uno:
+
+1. **La rete Reply.** Il Mac è collegato alla rete aziendale, in Wi-Fi `reply-*` o via cavo/dock (dominio `replynet.prv`). La stessa rete raggiunta **via VPN da casa non conta**.
+2. **La posizione.** Il Mac è entro 250 m da una delle [55 sedi Reply](https://www.reply.com/it/offices) nel mondo. Serve quando la rete non basta, per esempio con l'hotspot del telefono o la Wi-Fi ospiti.
+
+La notifica dice anche in quale sede ti trova.
+
+## Privacy
+
+- **Tutto resta sul tuo Mac.** Rete e posizione servono solo a rispondere "sei in una sede Reply sì o no", e il calcolo avviene in locale. Lo strumento non invia la tua posizione né altri dati a server, a Reply o a terzi.
+- La posizione la calcola macOS con i propri servizi di localizzazione, come per Mappe. Per le sedi senza coordinate, al primo utilizzo l'indirizzo **della sede** viene convertito in coordinate dal servizio Apple e poi salvato in cache.
+- La posizione viene letta al massimo ogni 10 minuti e **solo nei giorni e negli orari di lavoro**. Puoi disattivarla del tutto (`LOCATION_CHECK=0`): resta il riconoscimento tramite rete.
+- Il check-in **non viene fatto automaticamente**: lo fai tu su Desk Booking. Lo strumento non accede al tuo account.
+- L'unica connessione verso l'esterno è il controllo degli aggiornamenti verso questo repository, una volta al giorno.
+- È un progetto interno open source: il codice è tutto qui, leggibile.
+
+## Installazione (1 minuto)
+
+Apri il **Terminale** e incolla:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gastuti-reply/checkin-reminder/main/install.sh | bash
 ```
 
-Opzioni: `--ssid '<regex>'`, `--dns '<regex>'`, `--url '<url>'`, `--dialog`, `--no-auto-update`, `--uninstall`.
+Durante l'installazione:
 
-Durante l'installazione macOS chiede due permessi per **"Check-in"**: **notifiche** e **posizione**. Scegli **Consenti** per entrambi (la posizione è facoltativa: senza, vale solo la rete). Per tenere la notifica a schermo finché non scegli un'azione: *Impostazioni di Sistema → Notifiche → Check-in → stile "Avvisi"*. Con lo stile "Banner" le azioni compaiono passando il mouse sulla notifica (menu **Opzioni**).
+1. macOS chiede di consentire le **notifiche** di "Check-in": scegli **Consenti**.
+2. macOS chiede la **posizione**: scegli **Consenti**. È facoltativa, ma rende il riconoscimento più affidabile.
+3. Si aprono le impostazioni delle notifiche: imposta lo stile **Avvisi**. Così la notifica resta a schermo finché non rispondi; con "Banner" sparisce dopo pochi secondi.
 
-L'app delle notifiche (`~/Applications/CheckinNotifier.app`) viene scaricata dall'ultima Release; se installi da un clone e hai gli strumenti di sviluppo Apple (`xcode-select --install`), viene compilata in locale.
-
-## Uso
-
-| Comando | Cosa fa |
-|---|---|
-| `checkin-reminder status` | Diagnosi: rete, posizione, se sei "in ufficio", stato di oggi |
-| `checkin-reminder where` | Legge ora la posizione e dice in quale sede sei |
-| `checkin-reminder test` | Mostra subito il promemoria |
-| `checkin-reminder done` | Segna il check-in di oggi come fatto |
-| `checkin-reminder snooze [min]` | Rimanda il promemoria |
-| `checkin-reminder reset` | Azzera lo stato di oggi |
-| `checkin-reminder config` | Apre la configurazione |
-| `checkin-reminder log` | Ultime righe del log |
-| `checkin-reminder update` | Aggiorna all'ultima versione (`--force` per reinstallare) |
-| `checkin-reminder uninstall [--purge]` | Disinstalla (con `--purge` anche la config) |
-
-## Configurazione
-
-`~/.config/checkin-reminder/config` contiene solo le tue personalizzazioni: le righe commentate usano il default, che può migliorare con gli aggiornamenti.
+Poi prova subito:
 
 ```bash
-#SSID_PATTERN='^reply-'
-#DNS_DOMAIN_PATTERN='replynet\.prv$'
-#VPN_COUNTS_AS_OFFICE=0
-#LOCATION_CHECK=1              # 0 = non usare la posizione
-#OFFICE_RADIUS=250             # metri dalla sede
-#CHECKIN_URL='https://deskbooking.reply.com/home'
-#WORKDAYS='1 2 3 4 5'          # 1=lun ... 7=dom
-#START_HOUR=7
-#END_HOUR=20
-#SNOOZE_MINUTES=15
-#REMIND_STYLE='banner'         # oppure 'dialog'
-#AUTO_UPDATE=1
+checkin-reminder test
 ```
 
-### Uffici
+Funziona su macOS 11 o successivi, sia Apple Silicon sia Intel. Non servono permessi di amministratore.
 
-L'elenco delle sedi è in `offices.tsv` (fonte: reply.com) e si aggiorna con le release. Le sedi senza coordinate vengono geolocalizzate dall'indirizzo una sola volta (geocoder Apple) e messe in cache. Per aggiungere un posto tuo (es. la sede di un cliente) crea `~/.config/checkin-reminder/offices.tsv` con le righe `nome<TAB>indirizzo<TAB>lat<TAB>lon` (lat/lon facoltativi).
+<details>
+<summary>Altri modi di installare</summary>
 
-## Rilasciare una nuova versione (manutentori)
+- **Da download**: scarica `checkin-reminder-x.y.z.zip` dall'[ultima Release](../../releases/latest), estrailo e lancia `./install.sh` dalla cartella.
+- **Da un clone**: `git clone` del repo e poi `./install.sh`. Se hai gli strumenti di sviluppo Apple, l'app viene compilata in locale.
+- **Opzioni dell'installer**: `--dialog` (finestra al centro invece della notifica), `--no-auto-update`, `--url '<url>'`, `--ssid '<regex>'`, `--dns '<regex>'`, `--uninstall`.
+</details>
 
-Il branch `main` è la versione pubblicata: gli utenti leggono `VERSION` da lì.
+## Aggiornamenti
 
-1. Fai le modifiche (su un branch e poi merge in `main`, oppure direttamente su `main`).
-2. Aggiungi la sezione `## x.y.z` in `CHANGELOG.md` e committa.
-3. Lancia:
-   ```bash
-   scripts/release.sh x.y.z
-   ```
-   Aggiorna la versione in `VERSION` e nello script, fa commit, tag `vx.y.z` e push. Il tag avvia GitHub Actions (`.github/workflows/release.yml`), che su un Mac compila `CheckinNotifier.app` (arm64 + Intel) e crea la Release con l'app e lo zip del progetto.
+Non devi fare nulla: una volta al giorno lo strumento controlla se c'è una versione nuova e si aggiorna da solo, comprese app, icona ed elenco delle sedi. Per aggiornare subito: `checkin-reminder update`.
 
-Poi:
-- chi ha l'aggiornamento automatico riceve la nuova versione **entro 24 ore** (solo lo script viene sostituito, in modo atomico);
-- l'aggiornamento automatico porta anche l'app notifiche e l'elenco uffici (l'app viene scaricata dalla Release appena GitHub Actions l'ha pubblicata);
-- `checkin-reminder update` aggiorna subito e rilancia l'installer, aggiornando anche il LaunchAgent. Serve solo quando una release modifica `install.sh` o il plist: segnalalo nel CHANGELOG.
+## Comandi utili
 
-Consiglio: fai prima il push su `main` e aspetta che la build di prova in Actions sia verde, poi lancia `scripts/release.sh`.
+| Comando | A cosa serve |
+|---|---|
+| `checkin-reminder test` | Mostra subito la notifica, per provarla |
+| `checkin-reminder where` | In quale sede mi trovo? |
+| `checkin-reminder status` | Diagnosi completa: rete, posizione, permessi, stato di oggi |
+| `checkin-reminder done` | Segna il check-in di oggi come fatto |
+| `checkin-reminder snooze 30` | Rimanda di 30 minuti |
+| `checkin-reminder notifiche` | Apre le impostazioni notifiche (per lo stile «Avvisi») |
+| `checkin-reminder config` | Personalizza orari, giorni, raggio, testi |
+| `checkin-reminder update` | Aggiorna ora all'ultima versione |
+| `checkin-reminder uninstall` | Disinstalla tutto (`--purge` rimuove anche la configurazione) |
 
-Se sposti il repo (ad es. su un GitHub interno), aggiorna `DEFAULT_REPO_RAW` in `install.sh`. Chi installa da un `git clone` lo ottiene automaticamente dal remote. Con un repo privato l'installazione via `curl` richiede `CHECKIN_TOKEN`, che viene salvato nel Portachiavi per gli aggiornamenti.
+## Personalizzazione
 
-## Come funziona
+`checkin-reminder config` apre il file di configurazione. Ogni riga commentata usa il valore predefinito: togli il `#` solo da quello che vuoi cambiare.
 
-1. Il LaunchAgent `~/Library/LaunchAgents/com.reply.checkin-reminder.plist` avvia lo script a ogni cambio di rete, al login e ogni 5 minuti.
-2. Una volta al giorno lo script controlla se c'è una versione nuova.
-3. Lo script esce subito se sei fuori orario, se il check-in è già fatto, se il promemoria è rimandato o se non sei in ufficio.
-4. Altrimenti mostra la finestra. Lo stato è salvato in `~/Library/Application Support/checkin-reminder/`.
+```bash
+WORKDAYS='1 2 3 4 5'      # giorni (1 = lunedì … 7 = domenica)
+START_HOUR=7              # promemoria dalle 7…
+END_HOUR=20               # …alle 20
+SNOOZE_MINUTES=15         # dopo quanto torna con "Più tardi"
+OFFICE_RADIUS=250         # metri dalla sede
+LOCATION_CHECK=1          # 0 = non usare la posizione
+VPN_COUNTS_AS_OFFICE=0    # 1 = ricordamelo anche in VPN da casa
+REMIND_STYLE='banner'     # 'dialog' = finestra al centro dello schermo
+TITLE='…' MESSAGE='…'     # testi fissi al posto di quelli a rotazione
+AUTO_UPDATE=1             # 0 = aggiorna solo a mano
+```
 
-## Problemi
+**Lavori spesso da un cliente?** Aggiungi la sua sede in `~/.config/checkin-reminder/offices.tsv`, una riga per sede: `nome<TAB>indirizzo`. Le coordinate vengono ricavate dall'indirizzo.
 
-- **"In ufficio adesso: no" pur essendo in ufficio** → guarda le righe "Domini DNS" in `checkin-reminder status`. Se il dominio aziendale è diverso, impostalo in `DNS_DOMAIN_PATTERN`. Se la riga mostra un'interfaccia `utun…`, stai passando dalla VPN.
-- **Il promemoria non compare** → `checkin-reminder status` (servizio attivo? in orario?) e `checkin-reminder log`.
+## Domande frequenti
 
-## Struttura
+**La notifica sparisce dopo pochi secondi.**
+Lo stile è "Banner". Lancia `checkin-reminder notifiche` e scegli **Avvisi**. macOS non permette alle app di impostarlo da sole.
+
+**Devo per forza attivare la posizione?**
+No. Senza posizione, la notifica arriva quando il Mac è collegato alla rete Reply, in Wi-Fi o via cavo. La posizione serve solo se in ufficio usi un'altra rete, come l'hotspot del telefono o la Wi-Fi ospiti.
+
+**Sono in ufficio ma non arriva niente.**
+Lancia `checkin-reminder status` e guarda la riga *In ufficio adesso*. Se dice "no", controlla le righe *Posizione* e *Domini DNS*. Se la posizione risulta negata, attivala in Impostazioni di Sistema → Privacy e sicurezza → Localizzazione → Check-in.
+
+**Ho già fatto il check-in dal telefono.**
+Premi **Già fatto**, oppure lancia `checkin-reminder done`. Lo strumento non legge Desk Booking, quindi non può saperlo da solo.
+
+**Mi arriva anche in VPN da casa?**
+No. La rete Reply raggiunta tramite VPN viene riconosciuta e ignorata.
+
+**Consuma batteria?**
+No. Il controllo dura una frazione di secondo e la posizione viene letta solo in orario di lavoro, al massimo ogni 10 minuti.
+
+**Come lo tolgo?**
+`checkin-reminder uninstall`.
+
+---
+
+## Per chi mantiene il progetto
+
+<details>
+<summary>Come è fatto</summary>
+
+- **`bin/checkin-reminder`**: script bash, è il cervello. Un LaunchAgent utente lo avvia a ogni cambio di rete, al login e ogni 5 minuti. Esce subito se sei fuori orario, se il check-in è già fatto o rimandato, o se non sei in sede.
+- **`notifier/` → `CheckinNotifier.app`** (Swift, in `~/Applications`): mostra la notifica con le azioni e legge la posizione (CoreLocation). Le sedi senza coordinate vengono geolocalizzate una sola volta dall'indirizzo, con il geocoder Apple, e messe in cache.
+- **`offices.tsv`**: elenco delle sedi, da reply.com.
+- **`notifier/art/draw_icon.py`**: genera icona e immagine dell'Ispettore. La build crea l'`.icns` con `iconutil`.
+- Stato e log: `~/Library/Application Support/checkin-reminder/` e `~/Library/Logs/checkin-reminder.log`.
 
 ```
-bin/checkin-reminder       script principale
+bin/checkin-reminder       script principale (CLI + controllo periodico)
 notifier/                  app notifiche e posizione (Swift), icona, immagine
-notifier/art/draw_icon.py  genera icona e immagine dell'Ispettore
 offices.tsv                sedi Reply
 install.sh                 installer / aggiornamento completo
-scripts/release.sh         pubblicazione di una versione
+scripts/pubblica.sh        push + build + release + aggiornamento locale, in un comando
+scripts/release.sh         solo versione, tag e push
 scripts/build-notifier.sh  compilazione dell'app
-.github/workflows/         build e Release automatiche
-VERSION                versione pubblicata
-CHANGELOG.md
+.github/workflows/         build di prova su main, Release sui tag
 ```
+</details>
+
+<details>
+<summary>Pubblicare una nuova versione</summary>
+
+1. Aggiungi la sezione `## x.y.z` in `CHANGELOG.md`.
+2. Lancia `scripts/pubblica.sh x.y.z`. Lo script:
+   - committa le modifiche;
+   - fa il push e attende la build di prova su GitHub Actions;
+   - crea il tag e attende la Release, compilata da Actions in versione universale arm64 + Intel;
+   - aggiorna la tua installazione.
+
+   Serve la CLI `gh` autenticata, con lo scope `workflow`.
+3. Gli utenti ricevono la nuova versione entro 24 ore.
+
+`checkin-reminder update` va segnalato nel CHANGELOG solo se la release cambia `install.sh` o il LaunchAgent. Se sposti il repo, aggiorna `DEFAULT_REPO_RAW` in `install.sh`.
+</details>

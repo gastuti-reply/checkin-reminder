@@ -226,7 +226,7 @@ install_notifier() {
   if [ "$(cat "$STATE_DIR/alert_style" 2>/dev/null)" = banner ]; then
     say "Ultimo passo: nelle impostazioni che si aprono scegli lo stile «Avvisi»,"
     say "così la notifica resta a schermo finché non rispondi."
-    open "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.reply.checkin-reminder.notifier" 2>/dev/null \
+    open "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.reply.checkin.notifier" 2>/dev/null \
       || open "x-apple.systempreferences:com.apple.preference.notifications" || true
   fi
 }

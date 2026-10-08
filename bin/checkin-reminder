@@ -32,7 +32,7 @@ END_HOUR=20                             # ...fino a quest'ora (esclusa)
 LOCATION_CHECK=1                        # 1 = usa anche la posizione del Mac (serve il permesso)
 OFFICE_RADIUS=250                       # metri dall'ufficio entro cui sei "in ufficio"
 LOCATION_CACHE_MINUTES=10               # ogni quanto rileggere la posizione
-CHECKIN_URL='https://deskbooking.reply.com/home'  # vuoto = niente pulsante "Lo faccio ora"
+CHECKIN_URL='https://deskbooking.reply.com/home'  # vuoto = niente pulsante "Apri Desk Booking"
 SNOOZE_MINUTES=15                       # "ricordamelo più tardi"
 REMIND_STYLE='banner'                   # banner = notifica in alto a destra con azioni | dialog = finestra al centro
 TITLE=''                                # vuoti = testi a rotazione (vedi pick_copy)
@@ -155,7 +155,7 @@ at_office() {
   if [ -n "$SSID_PATTERN" ]; then
     s="$(current_ssid)"
     if [ -n "$s" ] && printf '%s' "$s" | grep -Eiq -- "$SSID_PATTERN"; then
-      OFFICE_REASON="📶 Wi-Fi $s"; name_office_from_cache; return 0
+      OFFICE_REASON="Wi-Fi $s"; name_office_from_cache; return 0
     fi
   fi
   if [ -n "$DNS_DOMAIN_PATTERN" ]; then
@@ -167,13 +167,13 @@ at_office() {
         is_tunnel "$ifc" && continue
         { [ "$ifc" = "-" ] && is_tunnel "$primary"; } && continue
       fi
-      OFFICE_REASON="📶 Rete Reply"; name_office_from_cache; return 0
+      OFFICE_REASON="Rete Reply"; name_office_from_cache; return 0
     done <<EOF
 $(dns_domains)
 EOF
   fi
   if at_office_by_location; then
-    OFFICE_REASON="📍 Reply $LOC_OFFICE"; return 0
+    OFFICE_REASON="Reply $LOC_OFFICE"; return 0
   fi
   return 1
 }
@@ -181,7 +181,7 @@ EOF
 # Se la posizione è già nota (cache fresca), il sottotitolo nomina l'ufficio invece della rete
 name_office_from_cache() {
   [ -f "$LOCATION_FILE" ] && [ "$(file_age "$LOCATION_FILE")" -lt $(( LOCATION_CACHE_MINUTES * 60 )) ] || return 0
-  read_location && [ "$LOC_STATUS" = IN ] && OFFICE_REASON="📍 Reply $LOC_OFFICE"
+  read_location && [ "$LOC_STATUS" = IN ] && OFFICE_REASON="Reply $LOC_OFFICE"
   return 0
 }
 
@@ -298,7 +298,7 @@ refresh_app_registration() {
 }
 
 open_notification_settings() {
-  open "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.reply.checkin-reminder.notifier" 2>/dev/null \
+  open "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.reply.checkin.notifier" 2>/dev/null \
     || open "x-apple.systempreferences:com.apple.preference.notifications"
 }
 
@@ -373,17 +373,16 @@ cmd_update() {
 # ---------------------------------------------------------------- testi
 # Coppie "titolo|testo". Le prime volte del giorno usa COPY_FIRST, dopo un rinvio COPY_AGAIN.
 COPY_FIRST=(
-  "Ehm… e il check-in?|Ti vedo: sei in ufficio. Desk Booking invece non lo sa ancora."
-  "Alt, controllo presenze 🧐|Risulti in sede ma non su Desk Booking. Dieci secondi e ti lascio in pace."
-  "Non fare finta di niente|Sei arrivato in ufficio. Il check-in, invece, non ancora."
-  "L'ispettore ha una domanda|«Where are you today?» Io lo so. Desk Booking no."
-  "Bentrovato in ufficio ☕|Prima del caffè, un check-in veloce: così i colleghi sanno dove trovarti."
-  "Psst… il check-in|Due clic su Desk Booking e l'ispettore torna a sonnecchiare."
+  "Sei in ufficio|Ricordati il check-in su Desk Booking."
+  "Check-in da fare|Su Desk Booking non risulti ancora in sede."
+  "Arrivato in sede?|Fai il check-in su Desk Booking, ci vogliono dieci secondi."
+  "Manca il check-in|Un attimo su Desk Booking e sei a posto per oggi."
+  "Buongiorno|Prima di iniziare, fai il check-in su Desk Booking."
 )
 COPY_AGAIN=(
-  "Sono tornato 👀|Avevi detto «tra un attimo». L'attimo è passato."
-  "Secondo avviso|L'ispettore non dimentica. Il check-in nemmeno dovrebbe."
-  "Ultima chiamata (forse)|Un clic su «Lo faccio ora» e non mi senti più fino a domani."
+  "Check-in ancora da fare|Su Desk Booking non risulti ancora."
+  "Promemoria check-in|Quando hai un attimo, segnati su Desk Booking."
+  "Ultimo promemoria|Fai il check-in e per oggi non ti disturbo più."
 )
 
 shown_file() { echo "$STATE_DIR/shown-$(today)"; }
@@ -438,13 +437,13 @@ on run argv
   set theMsg to item 2 of argv
   set theReason to item 3 of argv
   set theUrl to item 4 of argv
-  set snoozeLabel to "Tra " & (item 5 of argv) & " min"
+  set snoozeLabel to "Più tardi"
   if theUrl is "" then
     set btns to {snoozeLabel, "Già fatto"}
     set defBtn to "Già fatto"
   else
-    set btns to {snoozeLabel, "Già fatto", "Lo faccio ora"}
-    set defBtn to "Lo faccio ora"
+    set btns to {snoozeLabel, "Già fatto", "Apri Desk Booking"}
+    set defBtn to "Apri Desk Booking"
   end if
   activate
   try
@@ -460,7 +459,7 @@ APPLESCRIPT
 
   case "$answer" in
     "Già fatto")     mark_done ;;
-    "Lo faccio ora") open "$CHECKIN_URL"; mark_done ;;
+    "Apri Desk Booking") open "$CHECKIN_URL"; mark_done ;;
     *)               snooze "$SNOOZE_MINUTES"; log "rimandato di $SNOOZE_MINUTES min ($answer)" ;;
   esac
 }
@@ -481,7 +480,7 @@ cmd_check() {
 cmd_test() {
   acquire_lock || { echo "Un promemoria è già aperto."; return 1; }
   trap release_lock EXIT
-  at_office || OFFICE_REASON="🧪 Prova"
+  at_office || OFFICE_REASON="Prova"
   remind "$OFFICE_REASON"
 }
 

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleIdentifier</key>
-  <string>com.reply.checkin-reminder.notifier</string>
+  <string>com.reply.checkin.notifier</string>
   <key>CFBundleName</key>
   <string>Check-in</string>
   <key>CFBundleDisplayName</key>

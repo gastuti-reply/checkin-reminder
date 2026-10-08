@@ -8,7 +8,7 @@
 
 set -u
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 APP_ID="com.reply.checkin-reminder"
 BIN="$HOME/.local/bin/checkin-reminder"
 CONFIG_DIR="$HOME/.config/checkin-reminder"
@@ -16,6 +16,7 @@ CONFIG_FILE="$CONFIG_DIR/config"
 STATE_DIR="$HOME/Library/Application Support/checkin-reminder"
 LOG_FILE="$HOME/Library/Logs/checkin-reminder.log"
 PLIST="$HOME/Library/LaunchAgents/$APP_ID.plist"
+NOTIFIER_APP="$HOME/Applications/CheckinNotifier.app"
 
 # ---- Valori di default (sovrascrivibili nel file di config) ----
 SSID_PATTERN='^reply-'                  # regex (case-insensitive) sul nome della Wi-Fi
@@ -26,7 +27,7 @@ START_HOUR=7                            # promemoria solo da quest'ora...
 END_HOUR=20                             # ...fino a quest'ora (esclusa)
 CHECKIN_URL='https://deskbooking.reply.com/home'  # vuoto = niente pulsante "Apri check-in"
 SNOOZE_MINUTES=15                       # "ricordamelo più tardi"
-REMIND_STYLE='dialog'                   # dialog | notification
+REMIND_STYLE='banner'                   # banner = notifica in alto a destra con azioni | dialog = finestra al centro
 TITLE='Check-in'
 MESSAGE='Sei in ufficio: ricordati di fare il check-in su Desk Booking ("Where are you today?")!'
 SSID_SLOW_FALLBACK=1                    # usa system_profiler se gli altri metodi falliscono
@@ -39,6 +40,7 @@ mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")"
 
 # shellcheck source=/dev/null
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+[ "$REMIND_STYLE" = notification ] && REMIND_STYLE=banner   # compatibilità 1.0/1.1
 
 # ---------------------------------------------------------------- utilità
 log()   { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
@@ -236,16 +238,21 @@ cmd_update() {
 }
 
 # ---------------------------------------------------------------- promemoria
+notifier_ok() {
+  [ -x "$NOTIFIER_APP/Contents/MacOS/CheckinNotifier" ] || return 1
+  ! grep -qs '^denied' "$STATE_DIR/notifier_status"
+}
+
 remind() {
   local reason="$1" answer
 
-  if [ "$REMIND_STYLE" = notification ]; then
-    osascript - "$TITLE" "$MESSAGE" "$reason" >/dev/null 2>&1 <<'APPLESCRIPT'
-on run argv
-  display notification (item 2 of argv) with title (item 1 of argv) subtitle (item 3 of argv) sound name "Glass"
-end run
-APPLESCRIPT
-    mark_done   # la notifica non ha pulsanti: una sola al giorno
+  if [ "$REMIND_STYLE" = banner ] && notifier_ok; then
+    open -n -g -a "$NOTIFIER_APP" --args post \
+      --title "$TITLE" --subtitle "$reason" --body "$MESSAGE" \
+      --url "$CHECKIN_URL" --snooze "$SNOOZE_MINUTES" --cli "$BIN"
+    # in attesa di risposta: non ripresentarla prima di SNOOZE_MINUTES
+    snooze "$SNOOZE_MINUTES"
+    log "notifica inviata ($reason)"
     return
   fi
 
@@ -319,6 +326,13 @@ cmd_status() {
   echo "Pattern Wi-Fi:     ${SSID_PATTERN:-<disattivato>}"
   echo "Pattern DNS:       ${DNS_DOMAIN_PATTERN:-<disattivato>}  (VPN conta come ufficio: $([ "$VPN_COUNTS_AS_OFFICE" = 1 ] && echo sì || echo no))"
   echo "URL check-in:      ${CHECKIN_URL:-<non impostato>}"
+  if [ "$REMIND_STYLE" = banner ]; then
+    if notifier_ok; then echo "Promemoria:        notifica (permesso: $(cat "$STATE_DIR/notifier_status" 2>/dev/null || echo 'non ancora chiesto'))"
+    elif [ -x "$NOTIFIER_APP/Contents/MacOS/CheckinNotifier" ]; then echo "Promemoria:        finestra (notifiche NEGATE: Impostazioni di Sistema → Notifiche → Check-in)"
+    else echo "Promemoria:        finestra (app notifiche non installata)"; fi
+  else
+    echo "Promemoria:        finestra"
+  fi
   echo "Aggiornamenti:     ${REPO_RAW:-<non configurati>} (auto: $([ "$AUTO_UPDATE" = 1 ] && echo sì || echo no))"
   echo
   echo "Interfaccia Wi-Fi: $ifc"
@@ -355,6 +369,7 @@ cmd_uninstall() {
   rm -f "$LOG_FILE" "$HOME/Library/Logs/checkin-reminder.err.log"
   security delete-generic-password -s "$APP_ID" -a token >/dev/null 2>&1 || true
   if [ "${1:-}" = "--purge" ]; then rm -rf "$CONFIG_DIR"; fi
+  rm -rf "$NOTIFIER_APP"
   rm -f "$BIN"
   echo "checkin-reminder disinstallato."
   [ "${1:-}" = "--purge" ] || echo "(La config resta in $CONFIG_DIR — usa 'uninstall --purge' per rimuoverla.)"
@@ -368,6 +383,7 @@ Comandi:
   status          mostra cosa rileva (Wi-Fi, DNS, orario, stato) — utile per diagnosi
   test            mostra subito il promemoria
   done            segna il check-in di oggi come fatto
+  snooze [min]    rimanda il promemoria
   reset           azzera lo stato di oggi (fatto / rimandato)
   config          apre il file di configurazione
   log             mostra le ultime righe del log
@@ -383,6 +399,7 @@ case "${1:-check}" in
   status|doctor)    cmd_status ;;
   test)             cmd_test ;;
   done)             mark_done; echo "Ok, check-in di oggi segnato come fatto." ;;
+  snooze)           snooze "${2:-$SNOOZE_MINUTES}"; log "rimandato di ${2:-$SNOOZE_MINUTES} min"; echo "Ok, te lo ricordo tra ${2:-$SNOOZE_MINUTES} minuti." ;;
   reset)            rm -f "$STATE_DIR"/done-* "$STATE_DIR/snooze_until"; echo "Stato di oggi azzerato." ;;
   config)           mkdir -p "$CONFIG_DIR"; [ -f "$CONFIG_FILE" ] || : > "$CONFIG_FILE"; open -t "$CONFIG_FILE" ;;
   log)              tail -n 30 "$LOG_FILE" 2>/dev/null || echo "Log vuoto." ;;

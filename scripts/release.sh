@@ -9,7 +9,7 @@
 #   2. aggiorna la versione in VERSION e in bin/checkin-reminder
 #   3. verifica la sintassi degli script e che CHANGELOG.md abbia la sezione della versione
 #   4. commit + tag v<versione> + push
-#   5. se c'è la CLI 'gh', crea la GitHub Release con lo zip scaricabile
+#   5. il push del tag avvia GitHub Actions, che compila CheckinNotifier.app e crea la Release
 #
 # Da quel momento: chi ha l'aggiornamento automatico riceve la nuova versione entro 24h,
 # gli altri con 'checkin-reminder update'.
@@ -36,6 +36,7 @@ grep -q "^VERSION=\"$NEW\"" bin/checkin-reminder || { echo "Versione non aggiorn
 
 bash -n bin/checkin-reminder
 bash -n install.sh
+bash -n scripts/build-notifier.sh
 
 git add VERSION bin/checkin-reminder
 git commit -q -m "Release v$NEW"
@@ -43,12 +44,4 @@ git tag -a "v$NEW" -m "v$NEW"
 git push -q origin main "v$NEW"
 echo "✅ Pubblicata v$NEW su main"
 
-if command -v gh >/dev/null 2>&1; then
-  ZIP="$(mktemp -d)/checkin-reminder-$NEW.zip"
-  git archive --format=zip --prefix=checkin-reminder/ -o "$ZIP" "v$NEW"
-  NOTES="$(awk -v v="$NEW" '$0 ~ "^## "v {f=1; next} /^## /{f=0} f' CHANGELOG.md)"
-  gh release create "v$NEW" "$ZIP" --title "v$NEW" --notes "$NOTES"
-  echo "✅ GitHub Release creata con lo zip"
-else
-  echo "(CLI 'gh' non trovata: crea la Release a mano dal tag v$NEW se vuoi lo zip scaricabile)"
-fi
+echo "GitHub Actions ora compila l'app notifiche e crea la Release v$NEW (2-3 minuti)."

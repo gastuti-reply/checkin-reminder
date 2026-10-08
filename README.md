@@ -4,7 +4,7 @@ Promemoria per macOS: quando il Mac è sulla rete dell'ufficio Reply, ti ricorda
 
 - Rileva l'ufficio dal **dominio DNS della rete Reply** (`replynet.prv`) e dal **nome della Wi-Fi** (`reply-*`). Il DNS funziona anche quando macOS nasconde il nome della Wi-Fi e via cavo/dock.
 - La rete Reply raggiunta **via VPN da casa non conta** come ufficio.
-- Una finestra con tre pulsanti: **Apri check-in** (apre Desk Booking), **Fatto**, **Tra 15 min**. Al massimo un promemoria completato al giorno, solo in orario lavorativo.
+- Una **notifica in alto a destra** con le azioni **Apri check-in** (apre Desk Booking), **Fatto**, **Tra 15 min**; un clic sulla notifica apre Desk Booking. Al massimo un check-in al giorno, solo in orario lavorativo. In alternativa, una finestra al centro (`REMIND_STYLE='dialog'`).
 - Si **aggiorna da solo** (controllo giornaliero) o con `checkin-reminder update`.
 - Nessuna dipendenza, nessun `sudo`, nessun permesso di localizzazione: uno script bash e un LaunchAgent utente.
 
@@ -19,21 +19,14 @@ cd checkin-reminder && ./install.sh
 **Da riga di comando**:
 
 ```bash
-curl -fsSL <REPO_RAW>/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/gastuti-reply/checkin-reminder/main/install.sh | bash
 ```
 
-Repo privato su GitHub Enterprise (il token viene salvato nel Portachiavi e usato per gli aggiornamenti):
+Opzioni: `--ssid '<regex>'`, `--dns '<regex>'`, `--url '<url>'`, `--dialog`, `--no-auto-update`, `--uninstall`.
 
-```bash
-export CHECKIN_TOKEN="<personal access token con permesso di lettura>"
-curl -fsSL -H "Authorization: token $CHECKIN_TOKEN" <REPO_RAW>/install.sh | bash
-```
+Durante l'installazione macOS chiede di consentire le notifiche di **"Check-in"**: scegli **Consenti**. Per tenere la notifica a schermo finché non scegli un'azione: *Impostazioni di Sistema → Notifiche → Check-in → stile "Avvisi"*. Con lo stile "Banner" le azioni compaiono passando il mouse sulla notifica (menu **Opzioni**).
 
-`<REPO_RAW>` è il raw URL del branch `main`, ad es. `https://<host>/raw/<org>/checkin-reminder/main`.
-
-Opzioni: `--ssid '<regex>'`, `--dns '<regex>'`, `--url '<url>'`, `--notification`, `--no-auto-update`, `--uninstall`.
-
-Al primo promemoria macOS può chiedere di consentire a `osascript` di mostrare finestre: va accettato.
+L'app delle notifiche (`~/Applications/CheckinNotifier.app`) viene scaricata dall'ultima Release; se installi da un clone e hai gli strumenti di sviluppo Apple (`xcode-select --install`), viene compilata in locale.
 
 ## Uso
 
@@ -42,6 +35,7 @@ Al primo promemoria macOS può chiedere di consentire a `osascript` di mostrare 
 | `checkin-reminder status` | Diagnosi: rete rilevata, se sei "in ufficio", stato di oggi |
 | `checkin-reminder test` | Mostra subito il promemoria |
 | `checkin-reminder done` | Segna il check-in di oggi come fatto |
+| `checkin-reminder snooze [min]` | Rimanda il promemoria |
 | `checkin-reminder reset` | Azzera lo stato di oggi |
 | `checkin-reminder config` | Apre la configurazione |
 | `checkin-reminder log` | Ultime righe del log |
@@ -61,7 +55,7 @@ Al primo promemoria macOS può chiedere di consentire a `osascript` di mostrare 
 #START_HOUR=7
 #END_HOUR=20
 #SNOOZE_MINUTES=15
-#REMIND_STYLE='dialog'         # oppure 'notification'
+#REMIND_STYLE='banner'         # oppure 'dialog'
 #AUTO_UPDATE=1
 ```
 
@@ -75,13 +69,13 @@ Il branch `main` è la versione pubblicata: gli utenti leggono `VERSION` da lì.
    ```bash
    scripts/release.sh x.y.z
    ```
-   Aggiorna la versione in `VERSION` e nello script, fa commit, tag `vx.y.z` e push; se c'è la CLI `gh` crea anche la GitHub Release con lo zip.
+   Aggiorna la versione in `VERSION` e nello script, fa commit, tag `vx.y.z` e push. Il tag avvia GitHub Actions (`.github/workflows/release.yml`), che su un Mac compila `CheckinNotifier.app` (arm64 + Intel) e crea la Release con l'app e lo zip del progetto.
 
 Poi:
 - chi ha l'aggiornamento automatico riceve la nuova versione **entro 24 ore** (solo lo script viene sostituito, in modo atomico);
 - `checkin-reminder update` aggiorna subito e rilancia l'installer, aggiornando anche il LaunchAgent. Va usato quando una release modifica `install.sh` o il plist: segnalalo nel CHANGELOG.
 
-Prima del primo rilascio imposta `DEFAULT_REPO_RAW` in `install.sh` con l'URL del repo. Chi installa da un `git clone` lo ottiene automaticamente dal remote.
+Se sposti il repo (ad es. su un GitHub interno), aggiorna `DEFAULT_REPO_RAW` in `install.sh`. Chi installa da un `git clone` lo ottiene automaticamente dal remote. Con un repo privato l'installazione via `curl` richiede `CHECKIN_TOKEN`, che viene salvato nel Portachiavi per gli aggiornamenti.
 
 ## Come funziona
 
@@ -98,9 +92,12 @@ Prima del primo rilascio imposta `DEFAULT_REPO_RAW` in `install.sh` con l'URL de
 ## Struttura
 
 ```
-bin/checkin-reminder   script principale
-install.sh             installer / aggiornamento completo
-scripts/release.sh     pubblicazione di una versione
+bin/checkin-reminder       script principale
+notifier/                  app delle notifiche (Swift)
+install.sh                 installer / aggiornamento completo
+scripts/release.sh         pubblicazione di una versione
+scripts/build-notifier.sh  compilazione dell'app
+.github/workflows/         build e Release automatiche
 VERSION                versione pubblicata
 CHANGELOG.md
 ```

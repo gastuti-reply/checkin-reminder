@@ -1,15 +1,16 @@
 #!/bin/bash
 #
 # checkin-reminder — ti ricorda di fare il check-in quando sei in ufficio.
-# Rileva l'ufficio dalla rete Wi-Fi (es. reply-N) e, opzionalmente, dal dominio DNS.
-# Tutto gira in locale: nessun dato viene inviato all'esterno.
+# Rileva l'ufficio dalla rete Wi-Fi (es. reply-N) e/o dal dominio DNS della rete Reply.
+# Tutto gira in locale: l'unica chiamata esterna è il controllo aggiornamenti verso il repo.
 #
-# Uso: checkin-reminder [check|status|test|done|reset|config|log|uninstall|version|help]
+# Uso: checkin-reminder [check|status|test|done|reset|config|log|update|uninstall|version|help]
 
 set -u
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 APP_ID="com.reply.checkin-reminder"
+BIN="$HOME/.local/bin/checkin-reminder"
 CONFIG_DIR="$HOME/.config/checkin-reminder"
 CONFIG_FILE="$CONFIG_DIR/config"
 STATE_DIR="$HOME/Library/Application Support/checkin-reminder"
@@ -17,29 +18,34 @@ LOG_FILE="$HOME/Library/Logs/checkin-reminder.log"
 PLIST="$HOME/Library/LaunchAgents/$APP_ID.plist"
 
 # ---- Valori di default (sovrascrivibili nel file di config) ----
-SSID_PATTERN='^reply-'          # regex (case-insensitive) sul nome della Wi-Fi
-DNS_DOMAIN_PATTERN=''           # regex sul dominio DNS, es. 'reply\.it$' (vuoto = disattivato)
-WORKDAYS='1 2 3 4 5'            # 1=lunedì ... 7=domenica
-START_HOUR=7                    # promemoria solo da quest'ora...
-END_HOUR=20                     # ...fino a quest'ora (esclusa)
+SSID_PATTERN='^reply-'                  # regex (case-insensitive) sul nome della Wi-Fi
+DNS_DOMAIN_PATTERN='replynet\.prv$'     # regex sul dominio DNS della rete aziendale (vuoto = off)
+VPN_COUNTS_AS_OFFICE=0                  # 0 = la rete Reply via VPN NON vale come "in ufficio"
+WORKDAYS='1 2 3 4 5'                    # 1=lunedì ... 7=domenica
+START_HOUR=7                            # promemoria solo da quest'ora...
+END_HOUR=20                             # ...fino a quest'ora (esclusa)
 CHECKIN_URL='https://deskbooking.reply.com/home'  # vuoto = niente pulsante "Apri check-in"
-SNOOZE_MINUTES=15               # "ricordamelo più tardi"
-REMIND_STYLE='dialog'           # dialog | notification
+SNOOZE_MINUTES=15                       # "ricordamelo più tardi"
+REMIND_STYLE='dialog'                   # dialog | notification
 TITLE='Check-in'
 MESSAGE='Sei in ufficio: ricordati di fare il check-in su Desk Booking ("Where are you today?")!'
-SSID_SLOW_FALLBACK=1            # usa system_profiler se gli altri metodi falliscono
+SSID_SLOW_FALLBACK=1                    # usa system_profiler se gli altri metodi falliscono
+AUTO_UPDATE=1                           # 1 = si aggiorna da solo; 0 = solo con "checkin-reminder update"
+UPDATE_CHECK_HOURS=24                   # ogni quanto controllare
+REPO_RAW=''                             # sorgente aggiornamenti (scritta dall'installer)
+
+mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")"
+[ -f "$STATE_DIR/source" ] && REPO_RAW="$(cat "$STATE_DIR/source")"
 
 # shellcheck source=/dev/null
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
-
-mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")"
 
 # ---------------------------------------------------------------- utilità
 log()   { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"; }
 today() { date +%Y-%m-%d; }
 now()   { date +%s; }
 
-# ---------------------------------------------------------------- rete
+# ---------------------------------------------------------------- rete: Wi-Fi
 wifi_iface() {
   local i
   i="$(networksetup -listallhardwareports 2>/dev/null \
@@ -74,15 +80,27 @@ current_ssid() {
   fi
 }
 
+# ---------------------------------------------------------------- rete: DNS
+is_tunnel() { case "${1:-}" in utun*|ipsec*|ppp*|gpd*|tun*|tap*) return 0 ;; esac; return 1; }
+
+default_iface() { route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}'; }
+
+# Una riga per dominio: "<dominio> <interfaccia|->"
 dns_domains() {
-  scutil --dns 2>/dev/null \
-    | awk '/^ *(search domain\[[0-9]+\]|domain) *:/{sub(/^[^:]*: */,""); print}' \
-    | sort -u
+  scutil --dns 2>/dev/null | awk '
+    /^resolver #/ { flush(); n=0; ifc="-"; next }
+    /^DNS configuration \(for scoped/ { flush(); exit }
+    /^ *(search domain\[[0-9]+\]|domain) *:/ { sub(/^[^:]*: */,""); d[++n]=$0; next }
+    /^ *if_index *:/ { if (match($0, /\(([^)]+)\)/)) ifc=substr($0, RSTART+1, RLENGTH-2); next }
+    function flush(  i) { for (i=1;i<=n;i++) print d[i], ifc; n=0 }
+    END { flush() }
+  ' | sort -u
 }
 
 OFFICE_REASON=''
 at_office() {
-  local s d
+  local s line dom ifc primary
+  OFFICE_REASON=''
   if [ -n "$SSID_PATTERN" ]; then
     s="$(current_ssid)"
     if [ -n "$s" ] && printf '%s' "$s" | grep -Eiq -- "$SSID_PATTERN"; then
@@ -90,8 +108,18 @@ at_office() {
     fi
   fi
   if [ -n "$DNS_DOMAIN_PATTERN" ]; then
-    d="$(dns_domains | grep -Ei -- "$DNS_DOMAIN_PATTERN" | head -1)"
-    if [ -n "$d" ]; then OFFICE_REASON="rete: $d"; return 0; fi
+    primary="$(default_iface)"
+    while read -r dom ifc; do
+      printf '%s' "$dom" | grep -Eiq -- "$DNS_DOMAIN_PATTERN" || continue
+      if [ "$VPN_COUNTS_AS_OFFICE" != 1 ]; then
+        # resolver legato a un tunnel, oppure tutto il traffico passa dal tunnel → VPN
+        is_tunnel "$ifc" && continue
+        { [ "$ifc" = "-" ] && is_tunnel "$primary"; } && continue
+      fi
+      OFFICE_REASON="rete: $dom"; return 0
+    done <<EOF
+$(dns_domains)
+EOF
   fi
   return 1
 }
@@ -130,6 +158,82 @@ acquire_lock() {
   return 1
 }
 release_lock() { rmdir "$STATE_DIR/lock" 2>/dev/null; }
+
+# ---------------------------------------------------------------- aggiornamenti
+repo_token() { security find-generic-password -s "$APP_ID" -a token -w 2>/dev/null; }
+
+fetch() {   # fetch <path-nel-repo> <file-destinazione>
+  local tok
+  tok="$(repo_token)"
+  if [ -n "$tok" ]; then
+    curl -fsSL --max-time 15 -H "Authorization: token $tok" "$REPO_RAW/$1" -o "$2"
+  else
+    curl -fsSL --max-time 15 "$REPO_RAW/$1" -o "$2"
+  fi
+}
+
+# 0 se $1 > $2 (versioni x.y.z)
+version_gt() {
+  local IFS=. i a b
+  read -r -a a <<< "$1"; read -r -a b <<< "$2"
+  for i in 0 1 2; do
+    [ "${a[i]:-0}" -gt "${b[i]:-0}" ] 2>/dev/null && return 0
+    [ "${a[i]:-0}" -lt "${b[i]:-0}" ] 2>/dev/null && return 1
+  done
+  return 1
+}
+
+remote_version() {
+  local t
+  t="$(mktemp)"
+  if fetch VERSION "$t" 2>/dev/null; then tr -d ' \n\r' < "$t"; fi
+  rm -f "$t"
+}
+
+# Sostituisce solo lo script (atomico: mv su un nuovo inode, sicuro anche mentre gira).
+self_update() {
+  local rv="$1" t
+  t="$(mktemp "$(dirname "$BIN")/.checkin-reminder.XXXXXX")" || return 1
+  if fetch bin/checkin-reminder "$t" \
+     && bash -n "$t" \
+     && grep -q "^VERSION=\"$rv\"" "$t"; then
+    chmod 755 "$t"; mv -f "$t" "$BIN"
+    log "aggiornato $VERSION → $rv"
+    return 0
+  fi
+  rm -f "$t"; log "aggiornamento a $rv non riuscito"; return 1
+}
+
+maybe_auto_update() {
+  local f="$STATE_DIR/last_update_check" last rv
+  [ "$AUTO_UPDATE" = 1 ] && [ -n "$REPO_RAW" ] || return 0
+  last="$(cat "$f" 2>/dev/null || echo 0)"
+  [ $(( $(now) - last )) -ge $(( UPDATE_CHECK_HOURS * 3600 )) ] || return 0
+  rv="$(remote_version)"
+  if [ -z "$rv" ]; then          # offline / errore: riprova tra un'ora
+    echo $(( $(now) - UPDATE_CHECK_HOURS * 3600 + 3600 )) > "$f"; return 0
+  fi
+  now > "$f"
+  version_gt "$rv" "$VERSION" && self_update "$rv"
+  return 0
+}
+
+cmd_update() {
+  local rv t
+  [ -n "$REPO_RAW" ] || { echo "Sorgente aggiornamenti non configurata: reinstalla dal repo."; return 1; }
+  echo "Versione installata: $VERSION"
+  rv="$(remote_version)"
+  [ -n "$rv" ] || { echo "Impossibile leggere la versione da $REPO_RAW (rete o token?)."; return 1; }
+  echo "Ultima versione:     $rv"
+  if ! version_gt "$rv" "$VERSION" && [ "${1:-}" != "--force" ]; then
+    echo "Sei già aggiornato. (usa 'update --force' per reinstallare)"; return 0
+  fi
+  # aggiornamento completo: rilancia l'installer (aggiorna anche il LaunchAgent, mantiene la config)
+  t="$(mktemp)"
+  fetch install.sh "$t" || { rm -f "$t"; echo "Download dell'installer non riuscito."; return 1; }
+  CHECKIN_REPO_RAW="$REPO_RAW" bash "$t"; local rc=$?
+  rm -f "$t"; return $rc
+}
 
 # ---------------------------------------------------------------- promemoria
 remind() {
@@ -180,6 +284,7 @@ APPLESCRIPT
 
 # ---------------------------------------------------------------- comandi
 cmd_check() {
+  maybe_auto_update
   in_window  || return 0
   is_done    && return 0
   is_snoozed && return 0
@@ -200,28 +305,32 @@ cmd_test() {
 yn() { if "$@"; then echo "sì"; else echo "no"; fi; }
 
 cmd_status() {
-  local ifc a b c ssid
+  local ifc a b c ssid office
   ifc="$(wifi_iface)"
   a="$(ssid_from_ipconfig "$ifc")"
   b="$(ssid_from_networksetup "$ifc")"
   c="$(ssid_from_profiler)"
   ssid="$(current_ssid)"
+  office="$(yn at_office)"
 
   echo "checkin-reminder $VERSION"
   echo
-  echo "Config:            $CONFIG_FILE $([ -f "$CONFIG_FILE" ] && echo '' || echo '(non trovato, uso i default)')"
+  echo "Config:            $CONFIG_FILE $([ -f "$CONFIG_FILE" ] || echo '(non trovato, uso i default)')"
   echo "Pattern Wi-Fi:     ${SSID_PATTERN:-<disattivato>}"
-  echo "Pattern DNS:       ${DNS_DOMAIN_PATTERN:-<disattivato>}"
+  echo "Pattern DNS:       ${DNS_DOMAIN_PATTERN:-<disattivato>}  (VPN conta come ufficio: $([ "$VPN_COUNTS_AS_OFFICE" = 1 ] && echo sì || echo no))"
   echo "URL check-in:      ${CHECKIN_URL:-<non impostato>}"
+  echo "Aggiornamenti:     ${REPO_RAW:-<non configurati>} (auto: $([ "$AUTO_UPDATE" = 1 ] && echo sì || echo no))"
   echo
   echo "Interfaccia Wi-Fi: $ifc"
   echo "  ipconfig:        ${a:-—}"
   echo "  networksetup:    ${b:-—}"
   echo "  system_profiler: ${c:-—}"
   echo "SSID usato:        ${ssid:-<nessuno / non leggibile>}"
-  echo "Domini DNS:        $(dns_domains | tr '\n' ' ')"
+  echo "Interfaccia default: $(default_iface)"
+  echo "Domini DNS (dominio interfaccia):"
+  dns_domains | grep -v 'arpa ' | sed 's/^/  /'
   echo
-  echo "In ufficio adesso: $(yn at_office) ${OFFICE_REASON:+($OFFICE_REASON)}"
+  echo "In ufficio adesso: $office ${OFFICE_REASON:+($OFFICE_REASON)}"
   echo "Orario lavorativo: $(yn in_window)"
   echo "Check-in fatto:    $(yn is_done)"
   echo "Rimandato:         $(yn is_snoozed)"
@@ -231,25 +340,23 @@ cmd_status() {
     echo "Servizio:          NON attivo (rilancia l'installer)"
   fi
 
-  if [ "$a" = "<redacted>" ] && ! valid_ssid "$ssid"; then
+  if [ "$a" = "<redacted>" ] && ! valid_ssid "$ssid" && [ -z "$DNS_DOMAIN_PATTERN" ]; then
     echo
-    echo "⚠️  macOS sta nascondendo il nome della Wi-Fi. Per sbloccarlo (una tantum):"
-    echo "    sudo ipconfig setverbose 1"
-    echo "   oppure usa DNS_DOMAIN_PATTERN nella config."
+    echo "⚠️  macOS nasconde il nome della Wi-Fi e il rilevamento DNS è spento."
+    echo "    Imposta DNS_DOMAIN_PATTERN (checkin-reminder config) oppure: sudo ipconfig setverbose 1"
   fi
 }
 
 cmd_uninstall() {
-  local self
-  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
   launchctl bootout "gui/$(id -u)/$APP_ID" 2>/dev/null \
     || launchctl unload "$PLIST" 2>/dev/null || true
   rm -f "$PLIST"
   rm -rf "$STATE_DIR"
-  rm -f "$LOG_FILE"
+  rm -f "$LOG_FILE" "$HOME/Library/Logs/checkin-reminder.err.log"
+  security delete-generic-password -s "$APP_ID" -a token >/dev/null 2>&1 || true
   if [ "${1:-}" = "--purge" ]; then rm -rf "$CONFIG_DIR"; fi
-  rm -f "$self"
-  echo "checkin-reminder disinstallato.${1:+ Configurazione rimossa.}"
+  rm -f "$BIN"
+  echo "checkin-reminder disinstallato."
   [ "${1:-}" = "--purge" ] || echo "(La config resta in $CONFIG_DIR — usa 'uninstall --purge' per rimuoverla.)"
 }
 
@@ -264,6 +371,7 @@ Comandi:
   reset           azzera lo stato di oggi (fatto / rimandato)
   config          apre il file di configurazione
   log             mostra le ultime righe del log
+  update          aggiorna all'ultima versione (--force per reinstallare)
   uninstall       disinstalla (aggiungi --purge per rimuovere anche la config)
   version         versione
   check           (usato dal servizio) controlla e, se serve, mostra il promemoria
@@ -278,6 +386,7 @@ case "${1:-check}" in
   reset)            rm -f "$STATE_DIR"/done-* "$STATE_DIR/snooze_until"; echo "Stato di oggi azzerato." ;;
   config)           mkdir -p "$CONFIG_DIR"; [ -f "$CONFIG_FILE" ] || : > "$CONFIG_FILE"; open -t "$CONFIG_FILE" ;;
   log)              tail -n 30 "$LOG_FILE" 2>/dev/null || echo "Log vuoto." ;;
+  update|upgrade)   cmd_update "${2:-}" ;;
   uninstall)        cmd_uninstall "${2:-}" ;;
   version|-v|--version) echo "$VERSION" ;;
   help|-h|--help)   cmd_help ;;

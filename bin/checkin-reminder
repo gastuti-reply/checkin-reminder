@@ -290,6 +290,20 @@ app_version() {
 }
 
 # Se l'app notifiche è più vecchia dello script, scarica quella dell'ultima release.
+# Fa rileggere a macOS app e icona (Launch Services + cache icone del Centro notifiche)
+refresh_app_registration() {
+  touch "$NOTIFIER_APP"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$NOTIFIER_APP" >/dev/null 2>&1
+  killall usernoted NotificationCenter >/dev/null 2>&1 || true   # si riavviano da soli
+}
+
+open_notification_settings() {
+  open "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.reply.checkin-reminder.notifier" 2>/dev/null \
+    || open "x-apple.systempreferences:com.apple.preference.notifications"
+}
+
+alert_style() { cat "$STATE_DIR/alert_style" 2>/dev/null; }
+
 update_app() {
   local url tmp tok av
   [ -d "$NOTIFIER_APP" ] || return 0              # mai installata (o stile dialog): non la imponiamo
@@ -302,7 +316,7 @@ update_app() {
        else curl -fsSL --max-time 60 "$url" -o "$tmp/n.zip"; fi; } \
      && ditto -x -k "$tmp/n.zip" "$tmp" && [ -x "$tmp/CheckinNotifier.app/Contents/MacOS/CheckinNotifier" ]; then
     rm -rf "$NOTIFIER_APP" && ditto "$tmp/CheckinNotifier.app" "$NOTIFIER_APP"
-    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$NOTIFIER_APP" >/dev/null 2>&1
+    refresh_app_registration
     log "app notifiche aggiornata ${av:-?} → $(app_version)"
     rm -rf "$tmp"; return 0
   fi
@@ -509,7 +523,9 @@ cmd_status() {
   echo "Pattern DNS:       ${DNS_DOMAIN_PATTERN:-<disattivato>}  (VPN conta come ufficio: $([ "$VPN_COUNTS_AS_OFFICE" = 1 ] && echo sì || echo no))"
   echo "URL check-in:      ${CHECKIN_URL:-<non impostato>}"
   if [ "$REMIND_STYLE" = banner ]; then
-    if notifier_ok; then echo "Promemoria:        notifica (permesso: $(cat "$STATE_DIR/notifier_status" 2>/dev/null || echo 'non ancora chiesto'))"
+    if notifier_ok; then
+      echo "Promemoria:        notifica (permesso: $(cat "$STATE_DIR/notifier_status" 2>/dev/null || echo 'non ancora chiesto'), stile: $(alert_style || echo '?'))"
+      [ "$(alert_style)" = banner ] && echo "                   ⚠️  stile Banner: sparisce da sola. Per tenerla a schermo: checkin-reminder notifiche → Avvisi"
     elif [ -x "$NOTIFIER_APP/Contents/MacOS/CheckinNotifier" ]; then echo "Promemoria:        finestra (notifiche NEGATE: Impostazioni di Sistema → Notifiche → Check-in)"
     else echo "Promemoria:        finestra (app notifiche non installata)"; fi
   else
@@ -570,6 +586,7 @@ checkin-reminder $VERSION — promemoria check-in quando sei in ufficio
 Comandi:
   status          mostra cosa rileva (Wi-Fi, DNS, posizione, orario, stato) — utile per diagnosi
   where           legge ora la posizione e dice in quale ufficio sei
+  notifiche       apre le impostazioni notifiche (stile "Avvisi" = resta a schermo)
   test            mostra subito il promemoria
   done            segna il check-in di oggi come fatto
   snooze [min]    rimanda il promemoria
@@ -587,6 +604,9 @@ case "${1:-check}" in
   check)            cmd_check ;;
   status|doctor)    cmd_status ;;
   where)            cmd_where ;;
+  notifiche|notifications)
+                    open_notification_settings
+                    echo "Scegli lo stile «Avvisi»: la notifica resta a schermo finché non scegli un'azione." ;;
   test)             cmd_test ;;
   done)             mark_done; echo "Ok, check-in di oggi segnato come fatto." ;;
   snooze)           snooze "${2:-$SNOOZE_MINUTES}"; log "rimandato di ${2:-$SNOOZE_MINUTES} min"; echo "Ok, te lo ricordo tra ${2:-$SNOOZE_MINUTES} minuti." ;;

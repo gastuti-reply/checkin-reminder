@@ -226,6 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case "auth":
             requestAuth { granted in
                 writeStatus("notifier_status", granted ? "ok" : "denied")
+                self.recordAlertStyle()
                 // 2 minuti per rispondere all'avviso di macOS sulla posizione
                 self.locator.start(timeout: 120) { _, status in
                     writeStatus("location_status", status)
@@ -246,6 +247,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let cat = UNNotificationCategory(identifier: kCategory, actions: [open, done, later],
                                          intentIdentifiers: [], options: [])
         center.setNotificationCategories([cat])
+    }
+
+    /// Salva lo stile scelto in Impostazioni → Notifiche: "alert" (resta a schermo), "banner", "none".
+    func recordAlertStyle(_ done: @escaping () -> Void = {}) {
+        center.getNotificationSettings { settings in
+            let style: String
+            switch settings.alertStyle {
+            case .alert:  style = "alert"
+            case .banner: style = "banner"
+            default:      style = "none"
+            }
+            writeStatus("alert_style", style)
+            DispatchQueue.main.async { done() }
+        }
     }
 
     func requestAuth(_ done: @escaping (Bool) -> Void) {
@@ -275,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 return
             }
             writeStatus("notifier_status", "ok")
+            self.recordAlertStyle()
 
             let content = UNMutableNotificationContent()
             content.title = self.opts.title

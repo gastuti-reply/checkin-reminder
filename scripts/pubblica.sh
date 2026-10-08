@@ -28,6 +28,12 @@ watch_run() {   # attende l'ultima esecuzione del workflow per un ref
     echo; echo "❌ Build fallita. Log:"; gh run view "$id" --log-failed | tail -60; exit 1; }
 }
 
+if [ -n "$(git status --porcelain)" ]; then
+  say "Commit delle modifiche in sospeso"
+  git add -A
+  git commit -q -m "${COMMIT_MSG:-Preparazione v$NEW}"
+fi
+
 say "Push su main"
 git push origin main
 

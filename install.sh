@@ -212,11 +212,23 @@ install_notifier() {
   rm -rf "$NOTIFIER_APP"
   ditto "$built" "$NOTIFIER_APP"
   xattr -dr com.apple.quarantine "$NOTIFIER_APP" 2>/dev/null || true
+  touch "$NOTIFIER_APP"
   "$LSREGISTER" -f "$NOTIFIER_APP" >/dev/null 2>&1 || true
+  killall usernoted NotificationCenter >/dev/null 2>&1 || true   # rilegge l'icona
   # chiede subito i permessi notifiche e posizione (compaiono due avvisi: scegli "Consenti")
-  rm -f "$STATE_DIR/notifier_status" "$STATE_DIR/location_status" "$STATE_DIR/location"
+  rm -f "$STATE_DIR/notifier_status" "$STATE_DIR/location_status" "$STATE_DIR/location" "$STATE_DIR/alert_style"
   open -g -a "$NOTIFIER_APP" --args auth || true
   say "App notifiche installata in $NOTIFIER_APP"
+
+  # Stile "Avvisi" (resta a schermo): macOS non permette di impostarlo da codice, lo sceglie l'utente.
+  local i
+  for i in $(seq 1 60); do [ -f "$STATE_DIR/alert_style" ] && break; sleep 1; done
+  if [ "$(cat "$STATE_DIR/alert_style" 2>/dev/null)" = banner ]; then
+    say "Ultimo passo: nelle impostazioni che si aprono scegli lo stile «Avvisi»,"
+    say "così la notifica resta a schermo finché non rispondi."
+    open "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.reply.checkin-reminder.notifier" 2>/dev/null \
+      || open "x-apple.systempreferences:com.apple.preference.notifications" || true
+  fi
 }
 
 if [ "$OPT_STYLE" != dialog ]; then install_notifier; fi

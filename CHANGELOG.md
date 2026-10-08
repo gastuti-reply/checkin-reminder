@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.1
+- Icona dell'Ispettore ora visibile nella notifica: l'icona è generata con gli strumenti Apple (`iconutil`) e la cache icone di macOS viene aggiornata a ogni installazione.
+- Notifica persistente: l'installer apre le impostazioni per scegliere lo stile «Avvisi» (macOS non permette di imporlo da codice). Nuovo comando `checkin-reminder notifiche`; `status` segnala lo stile Banner.
+- `scripts/pubblica.sh` committa da solo le modifiche in sospeso.
+
 ## 1.3.0
 - 📍 **Posizione**: oltre alla rete, riconosce gli uffici Reply dalla posizione del Mac (55 sedi da reply.com, raggio 250 m). Il sottotitolo della notifica dice in quale sede sei. La posizione resta sul Mac.
 - 🧐 **L'Ispettore del Check-in**: nuova icona e immagine nella notifica.

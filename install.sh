@@ -109,6 +109,17 @@ chmod 755 "$TMP_BIN"
 xattr -d com.apple.quarantine "$TMP_BIN" 2>/dev/null || true
 mv -f "$TMP_BIN" "$BIN"
 
+# Elenco uffici
+SHARE_DIR="$HOME/.local/share/checkin-reminder"
+mkdir -p "$SHARE_DIR"
+if [ -n "$SRC_DIR" ] && [ -f "$SRC_DIR/offices.tsv" ]; then
+  cp "$SRC_DIR/offices.tsv" "$SHARE_DIR/offices.tsv"
+elif [ -n "$REPO_RAW" ]; then
+  curl -fsSL "${AUTH[@]+"${AUTH[@]}"}" "$REPO_RAW/offices.tsv" -o "$SHARE_DIR/offices.tsv.tmp" \
+    && mv -f "$SHARE_DIR/offices.tsv.tmp" "$SHARE_DIR/offices.tsv" \
+    || { rm -f "$SHARE_DIR/offices.tsv.tmp"; say "Elenco uffici non scaricato: userò solo la rete."; }
+fi
+
 # Sorgente e token per gli aggiornamenti
 if [ -n "$REPO_RAW" ]; then
   echo "$REPO_RAW" > "$STATE_DIR/source"
@@ -133,6 +144,8 @@ if [ ! -f "$CONFIG_FILE" ]; then
     if [ -n "$OPT_SSID" ]; then echo "SSID_PATTERN='$OPT_SSID'"; else echo "#SSID_PATTERN='^reply-'"; fi
     if [ -n "$OPT_DNS" ];  then echo "DNS_DOMAIN_PATTERN='$OPT_DNS'"; else echo "#DNS_DOMAIN_PATTERN='replynet\\.prv\$'"; fi
     echo "#VPN_COUNTS_AS_OFFICE=0          # 1 = anche la VPN da casa fa scattare il promemoria"
+    echo "#LOCATION_CHECK=1                # 0 = non usare la posizione del Mac"
+    echo "#OFFICE_RADIUS=250               # metri dall'ufficio"
     if [ -n "$OPT_URL" ];  then echo "CHECKIN_URL='$OPT_URL'"; else echo "#CHECKIN_URL='https://deskbooking.reply.com/home'"; fi
     echo "#WORKDAYS='1 2 3 4 5'            # 1=lun ... 7=dom"
     echo "#START_HOUR=7"
@@ -200,8 +213,8 @@ install_notifier() {
   ditto "$built" "$NOTIFIER_APP"
   xattr -dr com.apple.quarantine "$NOTIFIER_APP" 2>/dev/null || true
   "$LSREGISTER" -f "$NOTIFIER_APP" >/dev/null 2>&1 || true
-  # chiede subito il permesso notifiche (compare un avviso: scegli "Consenti")
-  rm -f "$STATE_DIR/notifier_status"
+  # chiede subito i permessi notifiche e posizione (compaiono due avvisi: scegli "Consenti")
+  rm -f "$STATE_DIR/notifier_status" "$STATE_DIR/location_status" "$STATE_DIR/location"
   open -g -a "$NOTIFIER_APP" --args auth || true
   say "App notifiche installata in $NOTIFIER_APP"
 }
@@ -265,10 +278,12 @@ echo
 "$BIN" status || true
 echo
 say "Installato ✅  versione $("$BIN" version)"
-say "Se macOS chiede di consentire le notifiche di \"Check-in\", scegli Consenti."
+say "macOS chiede due permessi per \"Check-in\": notifiche e posizione. Scegli Consenti per entrambi."
+say "(La posizione serve solo a capire se sei in un ufficio Reply e non lascia il Mac.)"
 say "Per tenerla a schermo finché non scegli: Impostazioni di Sistema → Notifiche → Check-in → stile Avvisi."
 echo
 echo "   checkin-reminder test     → prova subito il promemoria"
+echo "   checkin-reminder where    → in quale ufficio mi trovo?"
 echo "   checkin-reminder config   → modifica URL, orari, rete"
 echo "   checkin-reminder status   → diagnosi"
 echo "   checkin-reminder update   → aggiorna all'ultima versione"

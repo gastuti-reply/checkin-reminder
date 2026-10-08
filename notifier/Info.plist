@@ -16,6 +16,14 @@
   <string>0.0.0</string>
   <key>CFBundleVersion</key>
   <string>0.0.0</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>NSLocationUsageDescription</key>
+  <string>Per capire se sei in un ufficio Reply e ricordarti il check-in. La posizione resta sul tuo Mac.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Per capire se sei in un ufficio Reply e ricordarti il check-in. La posizione resta sul tuo Mac.</string>
+  <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+  <string>Per capire se sei in un ufficio Reply e ricordarti il check-in. La posizione resta sul tuo Mac.</string>
   <key>LSMinimumSystemVersion</key>
   <string>11.0</string>
   <!-- niente icona nel Dock né menu: è solo un mittente di notifiche -->

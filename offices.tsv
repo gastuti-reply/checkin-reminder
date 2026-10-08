@@ -1,0 +1,59 @@
+# Uffici Reply — fonte: https://www.reply.com/it/offices
+# nome<TAB>indirizzo<TAB>lat<TAB>lon
+# Se lat/lon mancano, l'app li ricava dall'indirizzo (geocoder Apple) e li salva in cache.
+# Per aggiungere un ufficio tuo: ~/.config/checkin-reminder/offices.tsv, stesso formato.
+Torino · Reply House	Via Ottavio Revel 9, 10121 Torino, Italia
+Torino · Via Nizza	Via Nizza 250, 10126 Torino, Italia
+Torino · Corso Francia	Corso Francia 110, 10143 Torino, Italia
+Milano · Via Castellanza	Via Castellanza 11, 20151 Milano, Italia
+Milano · Via Koch	Via Robert Koch 1/4, 20152 Milano, Italia
+Milano · Via Ripamonti	Via Ripamonti 104, 20141 Milano, Italia	45.4403791	9.1969568
+Milano · Piazza della Scala	Piazza della Scala 5, 20121 Milano, Italia	45.4669811	9.1890353
+Roma · Via Giorgione	Via Giorgione 59, 00147 Roma, Italia
+Roma · Via Castel Bolognese	Via Castel Bolognese 81, 00153 Roma, Italia
+Roma · Viale Bonelli	Viale Gianluigi Bonelli 40, 00127 Roma, Italia
+Bari · Piazza Aldo Moro	Piazza Aldo Moro 37, 70121 Bari, Italia
+Bari · Via Omodeo	Via Adolfo Omodeo 49, 70125 Bari, Italia
+Bologna	Via Nanni Costa 30, 40133 Bologna, Italia	44.5093745	11.3054805
+Firenze	Via Belfiore 55, 50144 Firenze, Italia
+Genova	Via XII Ottobre 1, 16121 Genova, Italia
+Padova	Via Longhin 103, 35129 Padova, Italia
+Parma	Viale Faustino Tanara 20/B, 43121 Parma, Italia	44.802757	10.3394376
+Silea (TV)	Via Avogadri 2, 31057 Silea TV, Italia
+Verona	Via dell'Esperanto 20, 37135 Verona, Italia
+Bruxelles	Rue de Loxum 25, 1000 Bruxelles, Belgium	50.8463463	4.3583773
+Belo Horizonte	Av. Nossa Senhora do Carmo 660, Belo Horizonte, Brazil	-19.945643	-43.9350723
+São Paulo	Av. Dr. Chucri Zaidan 1649, São Paulo, Brazil	-23.6271453	-46.7032331
+Beijing	Sanlitun SOHO, No. 8 Gongti North Road, Chaoyang, Beijing, China	39.933	116.4508113
+Nanjing	No.1 Lixin Road, Pukou District, Nanjing, China	32.157150	118.707223
+Zagreb	Ul. Roberta Frangeša Mihanovića 9, 10000 Zagreb, Croatia	45.7966081	15.911679
+Paris	33 Rue de Châteaudun, 75009 Paris, France	48.8759416	2.3367292
+Berlin	Lützowstraße 106, 10785 Berlin, Germany	52.50202	13.36934
+Bremen	Konsul-Smidt-Str. 14, 28217 Bremen, Germany	53.0898481	8.7757447
+Düsseldorf	Hansaallee 299, 40549 Düsseldorf, Germany	51.243539	6.7162866
+Frankfurt	Uhlandstr. 2, 60314 Frankfurt, Germany	50.1091562	8.6973318
+Gütersloh	Bartholomäusweg 26, 33334 Gütersloh, Germany	51.8826333	8.4448713
+München	Luise-Ullrich-Straße 14, 80636 München, Germany	48.1448503	11.5384883
+Hamburg	Admiralitätstraße 59, 20459 Hamburg, Germany	53.5476193	9.9836601
+Köln	Oskar-Jäger-Straße 173, 50825 Köln, Germany	50.9434657	6.9083592
+Kochi	SmartCity Kochi, 682030, India	10.0119406	76.3651306
+Luxembourg	21-25 allée Scheffer, 2520 Luxembourg	49.6174457	6.1229252
+Bodegraven	Goudseweg 181, 2411 HK Bodegraven, Netherlands	52.0699174	4.7400581
+Katowice	ul. Wrocławska 54, 40-217 Katowice, Poland	50.2658108	19.0465328
+Bucharest	17 Ceasornicului Street, Bucharest, Romania	44.4780912	26.0905017
+Zürich (Küsnacht)	Seestraße 39, 8700 Küsnacht, Switzerland	47.3270103	8.5747382
+London · Nova South	160 Victoria St, London SW1E 5LB, UK	51.4967808	-0.1439021
+London · Grosvenor Gardens	36-38 Grosvenor Gardens, London SW1W 0EB, UK	51.4966487	-0.1462688
+Alton	1 Oriel Court, Omega Park, Alton GU34 2YT, UK	51.1497772	-0.9653542
+Bristol	1 Victoria St, Redcliffe, Bristol BS1 6AA, UK	51.4532324	-2.5911007
+Glasgow	120 Bothwell Street, Glasgow G2 7JS, UK
+Manchester	Lincoln Square, Brazennose St, Manchester M2 5AD, UK	53.4800241	-2.2471004
+Sheffield	1 Concourse Way, Sheffield S1 2BJ, UK	53.3806153	-1.4625683
+Wokingham	Tech House, Oaklands Park, Wokingham RG41 2FD, UK	51.4008112	-0.8502761
+Chicago	71 South Wacker Dr, Chicago, IL 60606, USA	41.8809932	-87.6360489
+Atlanta	3500 Lenox Rd NE, Atlanta, GA 30326, USA	33.8520311	-84.3662805
+Bellevue	3180 139th Ave SE, Bellevue, WA 98005, USA	47.5818033	-122.154088
+Bloomfield Hills	37000 Woodward Ave, Bloomfield Hills, MI 48304, USA	42.559699	-83.222589
+Kansas City	2101 Broadway Blvd, Kansas City, MO 64108, USA	39.0872215	-94.5887279
+Malvern	3 Great Valley Pkwy, Malvern, PA 19355, USA	40.0648834	-75.5322655
+Reston	1950 Opportunity Way, Reston, VA 20190, USA

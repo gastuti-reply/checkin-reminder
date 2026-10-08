@@ -19,8 +19,9 @@ VERSION="$(tr -d ' \n' < "$ROOT/VERSION")"
 command -v swiftc >/dev/null || { echo "swiftc non trovato (installa: xcode-select --install)"; exit 1; }
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/notifier/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/notifier/AppIcon.icns" "$ROOT/notifier/inspector.png" "$APP/Contents/Resources/"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$VERSION" "$APP/Contents/Info.plist"
 

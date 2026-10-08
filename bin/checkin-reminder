@@ -1,10 +1,11 @@
 #!/bin/bash
 #
 # checkin-reminder — ti ricorda di fare il check-in quando sei in ufficio.
-# Rileva l'ufficio dalla rete Wi-Fi (es. reply-N) e/o dal dominio DNS della rete Reply.
-# Tutto gira in locale: l'unica chiamata esterna è il controllo aggiornamenti verso il repo.
+# Rileva l'ufficio dalla rete Reply (Wi-Fi reply-N, dominio DNS) e dalla posizione del Mac.
+# Tutto gira in locale: la posizione non lascia il Mac; l'unica chiamata esterna è il
+# controllo aggiornamenti verso il repo.
 #
-# Uso: checkin-reminder [check|status|test|done|reset|config|log|update|uninstall|version|help]
+# Uso: checkin-reminder [check|status|where|test|done|snooze|reset|config|log|update|uninstall|version|help]
 
 set -u
 
@@ -17,6 +18,9 @@ STATE_DIR="$HOME/Library/Application Support/checkin-reminder"
 LOG_FILE="$HOME/Library/Logs/checkin-reminder.log"
 PLIST="$HOME/Library/LaunchAgents/$APP_ID.plist"
 NOTIFIER_APP="$HOME/Applications/CheckinNotifier.app"
+SHARE_DIR="$HOME/.local/share/checkin-reminder"
+OFFICES_FILE="$SHARE_DIR/offices.tsv"          # elenco uffici Reply (aggiornato con le release)
+USER_OFFICES_FILE="$CONFIG_DIR/offices.tsv"    # uffici aggiuntivi tuoi, stesso formato
 
 # ---- Valori di default (sovrascrivibili nel file di config) ----
 SSID_PATTERN='^reply-'                  # regex (case-insensitive) sul nome della Wi-Fi
@@ -25,11 +29,14 @@ VPN_COUNTS_AS_OFFICE=0                  # 0 = la rete Reply via VPN NON vale com
 WORKDAYS='1 2 3 4 5'                    # 1=lunedì ... 7=domenica
 START_HOUR=7                            # promemoria solo da quest'ora...
 END_HOUR=20                             # ...fino a quest'ora (esclusa)
-CHECKIN_URL='https://deskbooking.reply.com/home'  # vuoto = niente pulsante "Apri check-in"
+LOCATION_CHECK=1                        # 1 = usa anche la posizione del Mac (serve il permesso)
+OFFICE_RADIUS=250                       # metri dall'ufficio entro cui sei "in ufficio"
+LOCATION_CACHE_MINUTES=10               # ogni quanto rileggere la posizione
+CHECKIN_URL='https://deskbooking.reply.com/home'  # vuoto = niente pulsante "Lo faccio ora"
 SNOOZE_MINUTES=15                       # "ricordamelo più tardi"
 REMIND_STYLE='banner'                   # banner = notifica in alto a destra con azioni | dialog = finestra al centro
-TITLE='Check-in'
-MESSAGE='Sei in ufficio: ricordati di fare il check-in su Desk Booking ("Where are you today?")!'
+TITLE=''                                # vuoti = testi a rotazione (vedi pick_copy)
+MESSAGE=''
 SSID_SLOW_FALLBACK=1                    # usa system_profiler se gli altri metodi falliscono
 AUTO_UPDATE=1                           # 1 = si aggiorna da solo; 0 = solo con "checkin-reminder update"
 UPDATE_CHECK_HOURS=24                   # ogni quanto controllare
@@ -99,6 +106,48 @@ dns_domains() {
   ' | sort -u
 }
 
+# ---------------------------------------------------------------- posizione
+LOCATION_FILE="$STATE_DIR/location"
+LOC_STATUS='' LOC_OFFICE='' LOC_DIST='' LOC_ACC=''
+
+file_age() { echo $(( $(now) - $(stat -f %m "$1" 2>/dev/null || echo 0) )); }
+
+location_available() {
+  [ "$LOCATION_CHECK" = 1 ] && [ -x "$NOTIFIER_APP/Contents/MacOS/CheckinNotifier" ]
+}
+
+# Chiede la posizione all'app (max ~20 s) e aggiorna $LOCATION_FILE. $1=force per ignorare la cache.
+refresh_location() {
+  location_available || return 1
+  if [ "${1:-}" != force ] && [ -f "$LOCATION_FILE" ]; then
+    local age max=$(( LOCATION_CACHE_MINUTES * 60 ))
+    age="$(file_age "$LOCATION_FILE")"
+    # permesso negato o localizzazione spenta: non insistere, riprova ogni 6 ore
+    grep -qE '^(DENIED|DISABLED)' "$LOCATION_FILE" && max=21600
+    [ "$age" -lt "$max" ] && return 0
+  fi
+  local offices="$OFFICES_FILE"
+  [ -f "$USER_OFFICES_FILE" ] && offices="$offices,$USER_OFFICES_FILE"
+  open -W -n -g -a "$NOTIFIER_APP" --args locate \
+    --offices "$offices" --cache "$STATE_DIR/geocache.tsv" \
+    --out "$LOCATION_FILE" --radius "$OFFICE_RADIUS" >/dev/null 2>&1
+  [ -f "$LOCATION_FILE" ]
+}
+
+read_location() {
+  LOC_STATUS='' LOC_OFFICE='' LOC_DIST='' LOC_ACC=''
+  [ -f "$LOCATION_FILE" ] || return 1
+  local ts
+  IFS=$'\t' read -r LOC_STATUS LOC_OFFICE LOC_DIST LOC_ACC ts < "$LOCATION_FILE" || true
+  [ -n "$LOC_STATUS" ]
+}
+
+# 0 se la posizione dice "sei in un ufficio Reply"
+at_office_by_location() {
+  refresh_location "${1:-}" || return 1
+  read_location && [ "$LOC_STATUS" = IN ]
+}
+
 OFFICE_REASON=''
 at_office() {
   local s line dom ifc primary
@@ -106,7 +155,7 @@ at_office() {
   if [ -n "$SSID_PATTERN" ]; then
     s="$(current_ssid)"
     if [ -n "$s" ] && printf '%s' "$s" | grep -Eiq -- "$SSID_PATTERN"; then
-      OFFICE_REASON="Wi-Fi: $s"; return 0
+      OFFICE_REASON="📶 Wi-Fi $s"; name_office_from_cache; return 0
     fi
   fi
   if [ -n "$DNS_DOMAIN_PATTERN" ]; then
@@ -118,12 +167,22 @@ at_office() {
         is_tunnel "$ifc" && continue
         { [ "$ifc" = "-" ] && is_tunnel "$primary"; } && continue
       fi
-      OFFICE_REASON="rete: $dom"; return 0
+      OFFICE_REASON="📶 Rete Reply"; name_office_from_cache; return 0
     done <<EOF
 $(dns_domains)
 EOF
   fi
+  if at_office_by_location; then
+    OFFICE_REASON="📍 Reply $LOC_OFFICE"; return 0
+  fi
   return 1
+}
+
+# Se la posizione è già nota (cache fresca), il sottotitolo nomina l'ufficio invece della rete
+name_office_from_cache() {
+  [ -f "$LOCATION_FILE" ] && [ "$(file_age "$LOCATION_FILE")" -lt $(( LOCATION_CACHE_MINUTES * 60 )) ] || return 0
+  read_location && [ "$LOC_STATUS" = IN ] && OFFICE_REASON="📍 Reply $LOC_OFFICE"
+  return 0
 }
 
 in_window() {
@@ -200,15 +259,72 @@ self_update() {
      && bash -n "$t" \
      && grep -q "^VERSION=\"$rv\"" "$t"; then
     chmod 755 "$t"; mv -f "$t" "$BIN"
+    update_offices
     log "aggiornato $VERSION → $rv"
     return 0
   fi
   rm -f "$t"; log "aggiornamento a $rv non riuscito"; return 1
 }
 
+update_offices() {
+  local t
+  mkdir -p "$SHARE_DIR"
+  t="$(mktemp "$SHARE_DIR/.offices.XXXXXX")" || return 1
+  if fetch offices.tsv "$t" && grep -q $'\t' "$t"; then mv -f "$t" "$OFFICES_FILE"; else rm -f "$t"; fi
+}
+
+release_asset_url() {   # raw URL di main → URL dell'ultima release
+  case "$REPO_RAW" in
+    https://raw.githubusercontent.com/*)
+      local p="${REPO_RAW#https://raw.githubusercontent.com/}"; p="${p%/main}"
+      echo "https://github.com/$p/releases/latest/download/$1" ;;
+    https://*/raw/*)
+      local host="${REPO_RAW#https://}"; host="${host%%/*}"
+      local p="${REPO_RAW#https://$host/raw/}"; p="${p%/main}"
+      echo "https://$host/$p/releases/latest/download/$1" ;;
+  esac
+}
+
+app_version() {
+  plutil -extract CFBundleShortVersionString raw "$NOTIFIER_APP/Contents/Info.plist" 2>/dev/null
+}
+
+# Se l'app notifiche è più vecchia dello script, scarica quella dell'ultima release.
+update_app() {
+  local url tmp tok av
+  [ -d "$NOTIFIER_APP" ] || return 0              # mai installata (o stile dialog): non la imponiamo
+  av="$(app_version)"
+  version_gt "$VERSION" "${av:-0}" || return 0
+  url="$(release_asset_url CheckinNotifier.zip)"; [ -n "$url" ] || return 1
+  tmp="$(mktemp -d)"
+  tok="$(repo_token)"
+  if { if [ -n "$tok" ]; then curl -fsSL --max-time 60 -H "Authorization: token $tok" "$url" -o "$tmp/n.zip"
+       else curl -fsSL --max-time 60 "$url" -o "$tmp/n.zip"; fi; } \
+     && ditto -x -k "$tmp/n.zip" "$tmp" && [ -x "$tmp/CheckinNotifier.app/Contents/MacOS/CheckinNotifier" ]; then
+    rm -rf "$NOTIFIER_APP" && ditto "$tmp/CheckinNotifier.app" "$NOTIFIER_APP"
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$NOTIFIER_APP" >/dev/null 2>&1
+    log "app notifiche aggiornata ${av:-?} → $(app_version)"
+    rm -rf "$tmp"; return 0
+  fi
+  rm -rf "$tmp"; return 1
+}
+
+# Primo avvio di una nuova versione dello script: allinea subito app ed elenco uffici
+# (senza aspettare il controllo giornaliero). Ritenta al massimo ogni 30 minuti.
+sync_components() {
+  local sv="$STATE_DIR/script_version" try="$STATE_DIR/last_sync_try"
+  [ "$(cat "$sv" 2>/dev/null)" = "$VERSION" ] && return 0
+  [ -n "$REPO_RAW" ] || { echo "$VERSION" > "$sv"; return 0; }
+  [ -f "$try" ] && [ "$(file_age "$try")" -lt 1800 ] && return 0
+  : > "$try"
+  [ -f "$OFFICES_FILE" ] || update_offices
+  if update_app; then echo "$VERSION" > "$sv"; rm -f "$try"; fi
+}
+
 maybe_auto_update() {
   local f="$STATE_DIR/last_update_check" last rv
   [ "$AUTO_UPDATE" = 1 ] && [ -n "$REPO_RAW" ] || return 0
+  sync_components
   last="$(cat "$f" 2>/dev/null || echo 0)"
   [ $(( $(now) - last )) -ge $(( UPDATE_CHECK_HOURS * 3600 )) ] || return 0
   rv="$(remote_version)"
@@ -217,6 +333,9 @@ maybe_auto_update() {
   fi
   now > "$f"
   version_gt "$rv" "$VERSION" && self_update "$rv"
+  # componenti rimasti indietro (es. dopo un auto-aggiornamento del solo script)
+  [ -f "$OFFICES_FILE" ] || update_offices
+  update_app || echo $(( $(now) - UPDATE_CHECK_HOURS * 3600 + 3600 )) > "$f"   # release non pronta: riprova tra un'ora
   return 0
 }
 
@@ -237,6 +356,47 @@ cmd_update() {
   rm -f "$t"; return $rc
 }
 
+# ---------------------------------------------------------------- testi
+# Coppie "titolo|testo". Le prime volte del giorno usa COPY_FIRST, dopo un rinvio COPY_AGAIN.
+COPY_FIRST=(
+  "Ehm… e il check-in?|Ti vedo: sei in ufficio. Desk Booking invece non lo sa ancora."
+  "Alt, controllo presenze 🧐|Risulti in sede ma non su Desk Booking. Dieci secondi e ti lascio in pace."
+  "Non fare finta di niente|Sei arrivato in ufficio. Il check-in, invece, non ancora."
+  "L'ispettore ha una domanda|«Where are you today?» Io lo so. Desk Booking no."
+  "Bentrovato in ufficio ☕|Prima del caffè, un check-in veloce: così i colleghi sanno dove trovarti."
+  "Psst… il check-in|Due clic su Desk Booking e l'ispettore torna a sonnecchiare."
+)
+COPY_AGAIN=(
+  "Sono tornato 👀|Avevi detto «tra un attimo». L'attimo è passato."
+  "Secondo avviso|L'ispettore non dimentica. Il check-in nemmeno dovrebbe."
+  "Ultima chiamata (forse)|Un clic su «Lo faccio ora» e non mi senti più fino a domani."
+)
+
+shown_file() { echo "$STATE_DIR/shown-$(today)"; }
+
+# Imposta COPY_TITLE e COPY_BODY. TITLE/MESSAGE nella config, se valorizzati, vincono.
+pick_copy() {
+  local n pair
+  n="$(cat "$(shown_file)" 2>/dev/null || echo 0)"
+  if [ "$n" -gt 0 ]; then
+    pair="${COPY_AGAIN[$((RANDOM % ${#COPY_AGAIN[@]}))]}"
+  else
+    pair="${COPY_FIRST[$((RANDOM % ${#COPY_FIRST[@]}))]}"
+  fi
+  COPY_TITLE="${TITLE:-${pair%%|*}}"
+  COPY_BODY="${MESSAGE:-${pair#*|}}"
+}
+
+count_shown() {
+  local n f cur
+  cur="$(shown_file)"
+  for f in "$STATE_DIR"/shown-*; do
+    [ -e "$f" ] && [ "$f" != "$cur" ] && rm -f "$f"
+  done
+  n="$(cat "$cur" 2>/dev/null || echo 0)"
+  echo $((n + 1)) > "$(shown_file)"
+}
+
 # ---------------------------------------------------------------- promemoria
 notifier_ok() {
   [ -x "$NOTIFIER_APP/Contents/MacOS/CheckinNotifier" ] || return 1
@@ -245,10 +405,12 @@ notifier_ok() {
 
 remind() {
   local reason="$1" answer
+  pick_copy
+  count_shown
 
   if [ "$REMIND_STYLE" = banner ] && notifier_ok; then
     open -n -g -a "$NOTIFIER_APP" --args post \
-      --title "$TITLE" --subtitle "$reason" --body "$MESSAGE" \
+      --title "$COPY_TITLE" --subtitle "$reason" --body "$COPY_BODY" \
       --url "$CHECKIN_URL" --snooze "$SNOOZE_MINUTES" --cli "$BIN"
     # in attesa di risposta: non ripresentarla prima di SNOOZE_MINUTES
     snooze "$SNOOZE_MINUTES"
@@ -256,7 +418,7 @@ remind() {
     return
   fi
 
-  answer="$(osascript - "$TITLE" "$MESSAGE" "$reason" "$CHECKIN_URL" "$SNOOZE_MINUTES" 2>/dev/null <<'APPLESCRIPT'
+  answer="$(osascript - "$COPY_TITLE" "$COPY_BODY" "$reason" "$CHECKIN_URL" "$SNOOZE_MINUTES" 2>/dev/null <<'APPLESCRIPT'
 on run argv
   set theTitle to item 1 of argv
   set theMsg to item 2 of argv
@@ -264,15 +426,15 @@ on run argv
   set theUrl to item 4 of argv
   set snoozeLabel to "Tra " & (item 5 of argv) & " min"
   if theUrl is "" then
-    set btns to {snoozeLabel, "Fatto"}
-    set defBtn to "Fatto"
+    set btns to {snoozeLabel, "Già fatto"}
+    set defBtn to "Già fatto"
   else
-    set btns to {snoozeLabel, "Fatto", "Apri check-in"}
-    set defBtn to "Apri check-in"
+    set btns to {snoozeLabel, "Già fatto", "Lo faccio ora"}
+    set defBtn to "Lo faccio ora"
   end if
   activate
   try
-    set res to display dialog (theMsg & return & return & "(" & theReason & ")") with title theTitle buttons btns default button defBtn with icon note giving up after 600
+    set res to display dialog (theTitle & return & return & theMsg & return & return & theReason) with title "Check-in" buttons btns default button defBtn with icon note giving up after 600
     if gave up of res then return "timeout"
     return button returned of res
   on error
@@ -283,8 +445,8 @@ APPLESCRIPT
 )"
 
   case "$answer" in
-    "Fatto")         mark_done ;;
-    "Apri check-in") open "$CHECKIN_URL"; mark_done ;;
+    "Già fatto")     mark_done ;;
+    "Lo faccio ora") open "$CHECKIN_URL"; mark_done ;;
     *)               snooze "$SNOOZE_MINUTES"; log "rimandato di $SNOOZE_MINUTES min ($answer)" ;;
   esac
 }
@@ -305,11 +467,31 @@ cmd_check() {
 cmd_test() {
   acquire_lock || { echo "Un promemoria è già aperto."; return 1; }
   trap release_lock EXIT
-  at_office || OFFICE_REASON="test"
+  at_office || OFFICE_REASON="🧪 Prova"
   remind "$OFFICE_REASON"
 }
 
 yn() { if "$@"; then echo "sì"; else echo "no"; fi; }
+
+describe_location() {
+  case "$LOC_STATUS" in
+    IN)        echo "in ufficio: Reply $LOC_OFFICE (${LOC_DIST} m, precisione ±${LOC_ACC} m)" ;;
+    OUT)       echo "fuori ufficio — il più vicino è Reply $LOC_OFFICE a ${LOC_DIST} m" ;;
+    DENIED)    echo "permesso negato (Impostazioni di Sistema → Privacy e sicurezza → Localizzazione → Check-in)" ;;
+    DISABLED)  echo "Localizzazione disattivata nel Mac" ;;
+    TIMEOUT)   echo "nessuna risposta (riprova; serve il Wi-Fi acceso)" ;;
+    NOOFFICES) echo "elenco uffici mancante (checkin-reminder update --force)" ;;
+    *)         echo "${LOC_STATUS:-sconosciuta}" ;;
+  esac
+}
+
+cmd_where() {
+  location_available || { echo "Posizione non disponibile (LOCATION_CHECK=0 o app notifiche mancante)."; return 1; }
+  echo "Leggo la posizione…"
+  refresh_location force
+  read_location
+  echo "Posizione: $(describe_location)"
+}
 
 cmd_status() {
   local ifc a b c ssid office
@@ -318,7 +500,7 @@ cmd_status() {
   b="$(ssid_from_networksetup "$ifc")"
   c="$(ssid_from_profiler)"
   ssid="$(current_ssid)"
-  office="$(yn at_office)"
+  if at_office; then office="sì"; else office="no"; fi
 
   echo "checkin-reminder $VERSION"
   echo
@@ -344,6 +526,12 @@ cmd_status() {
   echo "Domini DNS (dominio interfaccia):"
   dns_domains | grep -v 'arpa ' | sed 's/^/  /'
   echo
+  if location_available; then
+    read_location && echo "Posizione:         $(describe_location) [$(( $(file_age "$LOCATION_FILE") / 60 )) min fa]" \
+      || echo "Posizione:         non ancora letta (prova: checkin-reminder where)"
+  else
+    echo "Posizione:         non usata"
+  fi
   echo "In ufficio adesso: $office ${OFFICE_REASON:+($OFFICE_REASON)}"
   echo "Orario lavorativo: $(yn in_window)"
   echo "Check-in fatto:    $(yn is_done)"
@@ -369,7 +557,7 @@ cmd_uninstall() {
   rm -f "$LOG_FILE" "$HOME/Library/Logs/checkin-reminder.err.log"
   security delete-generic-password -s "$APP_ID" -a token >/dev/null 2>&1 || true
   if [ "${1:-}" = "--purge" ]; then rm -rf "$CONFIG_DIR"; fi
-  rm -rf "$NOTIFIER_APP"
+  rm -rf "$NOTIFIER_APP" "$SHARE_DIR"
   rm -f "$BIN"
   echo "checkin-reminder disinstallato."
   [ "${1:-}" = "--purge" ] || echo "(La config resta in $CONFIG_DIR — usa 'uninstall --purge' per rimuoverla.)"
@@ -380,7 +568,8 @@ cmd_help() {
 checkin-reminder $VERSION — promemoria check-in quando sei in ufficio
 
 Comandi:
-  status          mostra cosa rileva (Wi-Fi, DNS, orario, stato) — utile per diagnosi
+  status          mostra cosa rileva (Wi-Fi, DNS, posizione, orario, stato) — utile per diagnosi
+  where           legge ora la posizione e dice in quale ufficio sei
   test            mostra subito il promemoria
   done            segna il check-in di oggi come fatto
   snooze [min]    rimanda il promemoria
@@ -397,10 +586,11 @@ EOF
 case "${1:-check}" in
   check)            cmd_check ;;
   status|doctor)    cmd_status ;;
+  where)            cmd_where ;;
   test)             cmd_test ;;
   done)             mark_done; echo "Ok, check-in di oggi segnato come fatto." ;;
   snooze)           snooze "${2:-$SNOOZE_MINUTES}"; log "rimandato di ${2:-$SNOOZE_MINUTES} min"; echo "Ok, te lo ricordo tra ${2:-$SNOOZE_MINUTES} minuti." ;;
-  reset)            rm -f "$STATE_DIR"/done-* "$STATE_DIR/snooze_until"; echo "Stato di oggi azzerato." ;;
+  reset)            rm -f "$STATE_DIR"/done-* "$STATE_DIR"/shown-* "$STATE_DIR/snooze_until" "$STATE_DIR/location"; echo "Stato di oggi azzerato." ;;
   config)           mkdir -p "$CONFIG_DIR"; [ -f "$CONFIG_FILE" ] || : > "$CONFIG_FILE"; open -t "$CONFIG_FILE" ;;
   log)              tail -n 30 "$LOG_FILE" 2>/dev/null || echo "Log vuoto." ;;
   update|upgrade)   cmd_update "${2:-}" ;;

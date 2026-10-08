@@ -1,8 +1,9 @@
-name: Release
+name: Build & Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]      # build di prova a ogni push: si vede subito se l'app compila
+    tags: ["v*"]          # build + pubblicazione della Release
   workflow_dispatch:
 
 permissions:

@@ -1,0 +1,69 @@
+name: My office isn't recognized
+description: You're at a Reply office, but no reminder appears.
+title: "Office not recognized: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this: it helps add offices and networks for everyone.
+
+        **This repository is public: anyone can read this issue.** Share only what's asked below, and run the command **while you're at the office**. Run at home, it would show how far your home is from the nearest office.
+
+        Before opening, check the FAQ entry ["I'm at the office but nothing happens"](https://github.com/gastuti-reply/checkin-reminder#faq).
+  - type: input
+    id: office
+    attributes:
+      label: Which office?
+      description: City and address, e.g. "Munich, Luise-Ullrich-Straße 14".
+    validations:
+      required: true
+  - type: dropdown
+    id: in-list
+    attributes:
+      label: Is it in the office list?
+      description: Check [offices.tsv](https://github.com/gastuti-reply/checkin-reminder/blob/main/offices.tsv).
+      options:
+        - "Yes"
+        - "No, it's missing"
+        - "Not sure"
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: How was your Mac connected?
+      multiple: true
+      options:
+        - Office Wi-Fi
+        - Cable or dock
+        - Guest Wi-Fi
+        - Phone hotspot
+        - VPN
+        - Not sure
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        At the office, paste this in Terminal. It prints only the lines needed below: no network names, no file paths.
+
+        ```
+        sw_vers -productVersion; checkin-reminder status | grep -E '^(checkin-reminder |Reminder|Location|At the office|Working hours|Checked in|Snoozed|Service)'
+        ```
+  - type: textarea
+    id: status
+    attributes:
+      label: Diagnostics
+      description: Paste the output of the command above. Read it first, and remove anything you'd rather not share.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: wifi
+    attributes:
+      label: Office Wi-Fi name (optional)
+      description: Useful when the office network isn't called "reply-…". Leave it empty if you'd rather not make it public.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?

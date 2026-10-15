@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.reply.checkin.notifier</string>
+  <key>CFBundleName</key>
+  <string>Check-in</string>
+  <key>CFBundleDisplayName</key>
+  <string>Check-in</string>
+  <key>CFBundleExecutable</key>
+  <string>CheckinNotifier</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>0.0.0</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>NSLocationUsageDescription</key>
+  <string>Used only to tell whether you are at a Reply office, so it can remind you to check in. Your location never leaves your Mac.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Used only to tell whether you are at a Reply office, so it can remind you to check in. Your location never leaves your Mac.</string>
+  <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+  <string>Used only to tell whether you are at a Reply office, so it can remind you to check in. Your location never leaves your Mac.</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <!-- no Dock icon and no menu: it only sends notifications -->
+  <key>LSUIElement</key>
+  <true/>
+  <!-- default style "Alerts": the notification stays until you choose an action -->
+  <key>NSUserNotificationAlertStyle</key>
+  <string>alert</string>
+</dict>
+</plist>

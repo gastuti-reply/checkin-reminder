@@ -1,0 +1,753 @@
+#!/bin/bash
+#
+# checkin-reminder: reminds you to check in when you're at the office.
+# Detects the office from the Reply network (Wi-Fi reply-N, DNS domain) and from the Mac's location.
+# Everything runs locally: the location never leaves the Mac, and the only outbound request is
+# the update check against the repo.
+#
+# Usage: checkin-reminder [check|status|privacy|where|test|done|snooze|reset|config|log|update|uninstall|version|help]
+
+set -u
+
+VERSION="1.3.2"
+APP_ID="com.reply.checkin-reminder"
+BIN="$HOME/.local/bin/checkin-reminder"
+CONFIG_DIR="$HOME/.config/checkin-reminder"
+CONFIG_FILE="$CONFIG_DIR/config"
+STATE_DIR="$HOME/Library/Application Support/checkin-reminder"
+LOG_FILE="$HOME/Library/Logs/checkin-reminder.log"
+PLIST="$HOME/Library/LaunchAgents/$APP_ID.plist"
+NOTIFIER_APP="$HOME/Applications/CheckinNotifier.app"
+SHARE_DIR="$HOME/.local/share/checkin-reminder"
+OFFICES_FILE="$SHARE_DIR/offices.tsv"          # Reply office list (updated with each release)
+USER_OFFICES_FILE="$CONFIG_DIR/offices.tsv"    # your own extra offices, same format
+
+# ---- Defaults (override them in the config file) ----
+SSID_PATTERN='^reply-'                  # regex (case-insensitive) on the Wi-Fi name
+DNS_DOMAIN_PATTERN='replynet\.prv$'     # regex on the DNS domain of the corporate network (empty = off)
+VPN_COUNTS_AS_OFFICE=0                  # 0 = the Reply network over VPN does NOT count as "at the office"
+WORKDAYS='1 2 3 4 5'                    # 1=Monday ... 7=Sunday
+START_HOUR=7                            # remind only from this hour...
+END_HOUR=20                             # ...until this hour (excluded)
+LOCATION_CHECK=1                        # 1 = also use the Mac's location (needs the permission)
+OFFICE_RADIUS=250                       # meters from the office within which you're "at the office"
+LOCATION_CACHE_MINUTES=10               # how often to read the location again
+CHECKIN_URL='https://deskbooking.reply.com/home'  # empty = no "Open Desk Booking" button
+SNOOZE_MINUTES=15                       # "remind me later"
+REMIND_STYLE='banner'                   # banner = top-right notification with actions | dialog = window in the center
+TITLE=''                                # empty = rotating texts (see pick_copy)
+MESSAGE=''
+SSID_SLOW_FALLBACK=1                    # use system_profiler if the other methods fail
+AUTO_UPDATE=1                           # 1 = updates itself; 0 = only with "checkin-reminder update"
+UPDATE_CHECK_HOURS=24                   # how often to check
+LOG_DAYS=30                             # the log keeps only the last N days
+REPO_RAW=''                             # update source (written by the installer)
+
+mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")"
+[ -f "$STATE_DIR/source" ] && REPO_RAW="$(cat "$STATE_DIR/source")"
+
+# shellcheck source=/dev/null
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+[ "$REMIND_STYLE" = notification ] && REMIND_STYLE=banner   # compatibility with 1.0/1.1
+
+# ---------------------------------------------------------------- utilities
+log() {
+  local cutoff
+  printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
+  # the log is for troubleshooting, not a history of your office days: drop lines older than LOG_DAYS
+  cutoff="$(date -v-"${LOG_DAYS}"d +%Y-%m-%d 2>/dev/null)"
+  if [ -n "$cutoff" ] && [[ "$(head -c 10 "$LOG_FILE")" < "$cutoff" ]]; then
+    awk -v c="$cutoff" '$1 >= c' "$LOG_FILE" > "$LOG_FILE.tmp" && mv -f "$LOG_FILE.tmp" "$LOG_FILE"
+  fi
+}
+today() { date +%Y-%m-%d; }
+now()   { date +%s; }
+
+# ---------------------------------------------------------------- network: Wi-Fi
+wifi_iface() {
+  local i
+  i="$(networksetup -listallhardwareports 2>/dev/null \
+      | awk '/^Hardware Port: (Wi-Fi|AirPort)/{getline; print $2; exit}')"
+  echo "${i:-en0}"
+}
+
+valid_ssid() { [ -n "${1:-}" ] && [ "$1" != "<redacted>" ]; }
+
+ssid_from_ipconfig() {
+  ipconfig getsummary "$1" 2>/dev/null \
+    | awk '/^ *SSID : /{sub(/^ *SSID : /,""); print; exit}'
+}
+
+ssid_from_networksetup() {
+  networksetup -getairportnetwork "$1" 2>/dev/null \
+    | sed -n 's/^Current Wi-Fi Network: //p'
+}
+
+ssid_from_profiler() {
+  system_profiler SPAirPortDataType 2>/dev/null \
+    | awk '/Current Network Information:/{getline; sub(/^[ \t]+/,""); sub(/:$/,""); print; exit}'
+}
+
+current_ssid() {
+  local ifc s
+  ifc="$(wifi_iface)"
+  s="$(ssid_from_ipconfig "$ifc")";      valid_ssid "$s" && { echo "$s"; return; }
+  s="$(ssid_from_networksetup "$ifc")";  valid_ssid "$s" && { echo "$s"; return; }
+  if [ "$SSID_SLOW_FALLBACK" = 1 ]; then
+    s="$(ssid_from_profiler)";           valid_ssid "$s" && { echo "$s"; return; }
+  fi
+}
+
+# ---------------------------------------------------------------- network: DNS
+is_tunnel() { case "${1:-}" in utun*|ipsec*|ppp*|gpd*|tun*|tap*) return 0 ;; esac; return 1; }
+
+default_iface() { route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}'; }
+
+# One line per domain: "<domain> <interface|->"
+dns_domains() {
+  scutil --dns 2>/dev/null | awk '
+    /^resolver #/ { flush(); n=0; ifc="-"; next }
+    /^DNS configuration \(for scoped/ { flush(); exit }
+    /^ *(search domain\[[0-9]+\]|domain) *:/ { sub(/^[^:]*: */,""); d[++n]=$0; next }
+    /^ *if_index *:/ { if (match($0, /\(([^)]+)\)/)) ifc=substr($0, RSTART+1, RLENGTH-2); next }
+    function flush(  i) { for (i=1;i<=n;i++) print d[i], ifc; n=0 }
+    END { flush() }
+  ' | sort -u
+}
+
+# ---------------------------------------------------------------- location
+# $LOCATION_FILE holds only the answer (in/out, nearest office, distance), never the coordinates.
+LOCATION_FILE="$STATE_DIR/location"
+LOC_STATUS='' LOC_OFFICE='' LOC_DIST='' LOC_ACC=''
+
+file_age() { echo $(( $(now) - $(stat -f %m "$1" 2>/dev/null || echo 0) )); }
+
+location_available() {
+  [ "$LOCATION_CHECK" = 1 ] && [ -x "$NOTIFIER_APP/Contents/MacOS/CheckinNotifier" ]
+}
+
+# Asks the app for the location (max ~20 s) and updates $LOCATION_FILE. $1=force to skip the cache.
+refresh_location() {
+  location_available || return 1
+  if [ "${1:-}" != force ] && [ -f "$LOCATION_FILE" ]; then
+    local age max=$(( LOCATION_CACHE_MINUTES * 60 ))
+    age="$(file_age "$LOCATION_FILE")"
+    # permission denied or Location Services off: don't insist, try again every 6 hours
+    grep -qE '^(DENIED|DISABLED)' "$LOCATION_FILE" && max=21600
+    [ "$age" -lt "$max" ] && return 0
+  fi
+  local offices="$OFFICES_FILE"
+  [ -f "$USER_OFFICES_FILE" ] && offices="$offices,$USER_OFFICES_FILE"
+  open -W -n -g -a "$NOTIFIER_APP" --args locate \
+    --offices "$offices" --cache "$STATE_DIR/geocache.tsv" \
+    --out "$LOCATION_FILE" --radius "$OFFICE_RADIUS" >/dev/null 2>&1
+  [ -f "$LOCATION_FILE" ]
+}
+
+read_location() {
+  LOC_STATUS='' LOC_OFFICE='' LOC_DIST='' LOC_ACC=''
+  [ -f "$LOCATION_FILE" ] || return 1
+  local ts
+  IFS=$'\t' read -r LOC_STATUS LOC_OFFICE LOC_DIST LOC_ACC ts < "$LOCATION_FILE" || true
+  [ -n "$LOC_STATUS" ]
+}
+
+# 0 if the location says "you're at a Reply office"
+at_office_by_location() {
+  refresh_location "${1:-}" || return 1
+  read_location && [ "$LOC_STATUS" = IN ]
+}
+
+OFFICE_REASON=''
+at_office() {
+  local s line dom ifc primary
+  OFFICE_REASON=''
+  if [ -n "$SSID_PATTERN" ]; then
+    s="$(current_ssid)"
+    if [ -n "$s" ] && printf '%s' "$s" | grep -Eiq -- "$SSID_PATTERN"; then
+      OFFICE_REASON="Wi-Fi $s"; name_office_from_cache; return 0
+    fi
+  fi
+  if [ -n "$DNS_DOMAIN_PATTERN" ]; then
+    primary="$(default_iface)"
+    while read -r dom ifc; do
+      printf '%s' "$dom" | grep -Eiq -- "$DNS_DOMAIN_PATTERN" || continue
+      if [ "$VPN_COUNTS_AS_OFFICE" != 1 ]; then
+        # resolver bound to a tunnel, or all traffic goes through the tunnel → VPN
+        is_tunnel "$ifc" && continue
+        { [ "$ifc" = "-" ] && is_tunnel "$primary"; } && continue
+      fi
+      OFFICE_REASON="Reply network"; name_office_from_cache; return 0
+    done <<EOF
+$(dns_domains)
+EOF
+  fi
+  if at_office_by_location; then
+    OFFICE_REASON="Reply $LOC_OFFICE"; return 0
+  fi
+  return 1
+}
+
+# If the location is already known (fresh cache), the subtitle names the office instead of the network
+name_office_from_cache() {
+  [ -f "$LOCATION_FILE" ] && [ "$(file_age "$LOCATION_FILE")" -lt $(( LOCATION_CACHE_MINUTES * 60 )) ] || return 0
+  read_location && [ "$LOC_STATUS" = IN ] && OFFICE_REASON="Reply $LOC_OFFICE"
+  return 0
+}
+
+in_window() {
+  local dow h
+  dow="$(date +%u)"
+  h="$(date +%H)"; h=$((10#$h))
+  case " $WORKDAYS " in *" $dow "*) ;; *) return 1 ;; esac
+  [ "$h" -ge "$START_HOUR" ] && [ "$h" -lt "$END_HOUR" ]
+}
+
+# ---------------------------------------------------------------- state
+done_file()  { echo "$STATE_DIR/done-$(today)"; }
+is_done()    { [ -f "$(done_file)" ]; }
+mark_done()  {
+  rm -f "$STATE_DIR"/done-* "$STATE_DIR/snooze_until"
+  : > "$(done_file)"
+  log "check-in marked as done"
+}
+snooze()     { echo $(( $(now) + ${1:-$SNOOZE_MINUTES} * 60 )) > "$STATE_DIR/snooze_until"; }
+is_snoozed() {
+  local u
+  [ -f "$STATE_DIR/snooze_until" ] || return 1
+  u="$(cat "$STATE_DIR/snooze_until" 2>/dev/null)"
+  [ "$(now)" -lt "${u:-0}" ]
+}
+
+acquire_lock() {
+  local l="$STATE_DIR/lock" m
+  mkdir "$l" 2>/dev/null && return 0
+  m="$(stat -f %m "$l" 2>/dev/null || echo 0)"
+  if [ $(( $(now) - m )) -gt 1800 ]; then          # orphaned lock (>30 min)
+    rmdir "$l" 2>/dev/null; mkdir "$l" 2>/dev/null && return 0
+  fi
+  return 1
+}
+release_lock() { rmdir "$STATE_DIR/lock" 2>/dev/null; }
+
+# ---------------------------------------------------------------- updates
+repo_token() { security find-generic-password -s "$APP_ID" -a token -w 2>/dev/null; }
+
+fetch() {   # fetch <path-in-repo> <destination-file>
+  local tok
+  tok="$(repo_token)"
+  if [ -n "$tok" ]; then
+    curl -fsSL --max-time 15 -H "Authorization: token $tok" "$REPO_RAW/$1" -o "$2"
+  else
+    curl -fsSL --max-time 15 "$REPO_RAW/$1" -o "$2"
+  fi
+}
+
+# 0 if $1 > $2 (x.y.z versions)
+version_gt() {
+  local IFS=. i a b
+  read -r -a a <<< "$1"; read -r -a b <<< "$2"
+  for i in 0 1 2; do
+    [ "${a[i]:-0}" -gt "${b[i]:-0}" ] 2>/dev/null && return 0
+    [ "${a[i]:-0}" -lt "${b[i]:-0}" ] 2>/dev/null && return 1
+  done
+  return 1
+}
+
+remote_version() {
+  local t
+  t="$(mktemp)"
+  if fetch VERSION "$t" 2>/dev/null; then tr -d ' \n\r' < "$t"; fi
+  rm -f "$t"
+}
+
+# Replaces only the script (atomic: mv onto a new inode, safe even while it's running).
+self_update() {
+  local rv="$1" t
+  t="$(mktemp "$(dirname "$BIN")/.checkin-reminder.XXXXXX")" || return 1
+  if fetch bin/checkin-reminder "$t" \
+     && bash -n "$t" \
+     && grep -q "^VERSION=\"$rv\"" "$t"; then
+    chmod 755 "$t"; mv -f "$t" "$BIN"
+    update_offices
+    log "updated $VERSION → $rv"
+    return 0
+  fi
+  rm -f "$t"; log "update to $rv failed"; return 1
+}
+
+update_offices() {
+  local t
+  mkdir -p "$SHARE_DIR"
+  t="$(mktemp "$SHARE_DIR/.offices.XXXXXX")" || return 1
+  if fetch offices.tsv "$t" && grep -q $'\t' "$t"; then mv -f "$t" "$OFFICES_FILE"; else rm -f "$t"; fi
+}
+
+release_asset_url() {   # raw URL of main → URL of the latest release
+  case "$REPO_RAW" in
+    https://raw.githubusercontent.com/*)
+      local p="${REPO_RAW#https://raw.githubusercontent.com/}"; p="${p%/main}"
+      echo "https://github.com/$p/releases/latest/download/$1" ;;
+    https://*/raw/*)
+      local host="${REPO_RAW#https://}"; host="${host%%/*}"
+      local p="${REPO_RAW#https://$host/raw/}"; p="${p%/main}"
+      echo "https://$host/$p/releases/latest/download/$1" ;;
+  esac
+}
+
+app_version() {
+  plutil -extract CFBundleShortVersionString raw "$NOTIFIER_APP/Contents/Info.plist" 2>/dev/null
+}
+
+# Makes macOS re-read the app and its icon (Launch Services + Notification Center icon cache)
+refresh_app_registration() {
+  touch "$NOTIFIER_APP"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$NOTIFIER_APP" >/dev/null 2>&1
+  killall usernoted NotificationCenter >/dev/null 2>&1 || true   # they restart on their own
+}
+
+open_notification_settings() {
+  open "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.reply.checkin.notifier" 2>/dev/null \
+    || open "x-apple.systempreferences:com.apple.preference.notifications"
+}
+
+alert_style() { cat "$STATE_DIR/alert_style" 2>/dev/null; }
+
+# If the notification app is older than the script, downloads the one from the latest release.
+update_app() {
+  local url tmp tok av
+  [ -d "$NOTIFIER_APP" ] || return 0              # never installed (or dialog style): don't force it
+  av="$(app_version)"
+  version_gt "$VERSION" "${av:-0}" || return 0
+  url="$(release_asset_url CheckinNotifier.zip)"; [ -n "$url" ] || return 1
+  tmp="$(mktemp -d)"
+  tok="$(repo_token)"
+  if { if [ -n "$tok" ]; then curl -fsSL --max-time 60 -H "Authorization: token $tok" "$url" -o "$tmp/n.zip"
+       else curl -fsSL --max-time 60 "$url" -o "$tmp/n.zip"; fi; } \
+     && ditto -x -k "$tmp/n.zip" "$tmp" && [ -x "$tmp/CheckinNotifier.app/Contents/MacOS/CheckinNotifier" ]; then
+    rm -rf "$NOTIFIER_APP" && ditto "$tmp/CheckinNotifier.app" "$NOTIFIER_APP"
+    refresh_app_registration
+    log "notification app updated ${av:-?} → $(app_version)"
+    rm -rf "$tmp"; return 0
+  fi
+  rm -rf "$tmp"; return 1
+}
+
+# First run of a new script version: bring the app and the office list in line right away
+# (without waiting for the daily check). Retries at most every 30 minutes.
+sync_components() {
+  local sv="$STATE_DIR/script_version" try="$STATE_DIR/last_sync_try"
+  [ "$(cat "$sv" 2>/dev/null)" = "$VERSION" ] && return 0
+  [ -n "$REPO_RAW" ] || { echo "$VERSION" > "$sv"; return 0; }
+  [ -f "$try" ] && [ "$(file_age "$try")" -lt 1800 ] && return 0
+  : > "$try"
+  [ -f "$OFFICES_FILE" ] || update_offices
+  if update_app; then echo "$VERSION" > "$sv"; rm -f "$try"; fi
+}
+
+maybe_auto_update() {
+  local f="$STATE_DIR/last_update_check" last rv
+  [ "$AUTO_UPDATE" = 1 ] && [ -n "$REPO_RAW" ] || return 0
+  sync_components
+  last="$(cat "$f" 2>/dev/null || echo 0)"
+  [ $(( $(now) - last )) -ge $(( UPDATE_CHECK_HOURS * 3600 )) ] || return 0
+  rv="$(remote_version)"
+  if [ -z "$rv" ]; then          # offline / error: try again in an hour
+    echo $(( $(now) - UPDATE_CHECK_HOURS * 3600 + 3600 )) > "$f"; return 0
+  fi
+  now > "$f"
+  version_gt "$rv" "$VERSION" && self_update "$rv"
+  # components left behind (e.g. after an automatic update of the script alone)
+  [ -f "$OFFICES_FILE" ] || update_offices
+  update_app || echo $(( $(now) - UPDATE_CHECK_HOURS * 3600 + 3600 )) > "$f"   # release not ready: try again in an hour
+  return 0
+}
+
+cmd_update() {
+  local rv t
+  [ -n "$REPO_RAW" ] || { echo "No update source configured: reinstall from the repo."; return 1; }
+  echo "Installed version: $VERSION"
+  rv="$(remote_version)"
+  [ -n "$rv" ] || { echo "Could not read the version from $REPO_RAW (network or token?)."; return 1; }
+  echo "Latest version:    $rv"
+  if ! version_gt "$rv" "$VERSION" && [ "${1:-}" != "--force" ]; then
+    echo "You're up to date. (use 'update --force' to reinstall)"; return 0
+  fi
+  # full update: runs the installer again (it also updates the LaunchAgent and keeps the config)
+  t="$(mktemp)"
+  fetch install.sh "$t" || { rm -f "$t"; echo "Could not download the installer."; return 1; }
+  CHECKIN_REPO_RAW="$REPO_RAW" bash "$t"; local rc=$?
+  rm -f "$t"; return $rc
+}
+
+# ---------------------------------------------------------------- texts
+# "title|body" pairs. The first reminder of the day uses COPY_FIRST, the next ones COPY_AGAIN.
+# The tool never reads Desk Booking, so the texts don't claim to know whether you checked in.
+COPY_FIRST=(
+  "You're at the office|Remember to check in on Desk Booking."
+  "Time to check in|It takes ten seconds on Desk Booking."
+  "Just arrived?|Check in on Desk Booking before you get started."
+  "Quick check-in|One moment on Desk Booking and you're set for the day."
+  "Welcome in|Don't forget your Desk Booking check-in."
+)
+COPY_AGAIN=(
+  "Check-in reminder|When you have a moment, check in on Desk Booking."
+  "Already checked in?|Choose Already done and I'll stop for today."
+  "One more nudge|Check in on Desk Booking and I won't bother you again today."
+)
+
+shown_file() { echo "$STATE_DIR/shown-$(today)"; }
+
+# Sets COPY_TITLE and COPY_BODY. TITLE/MESSAGE from the config, if set, take precedence.
+pick_copy() {
+  local n pair
+  n="$(cat "$(shown_file)" 2>/dev/null || echo 0)"
+  if [ "$n" -gt 0 ]; then
+    pair="${COPY_AGAIN[$((RANDOM % ${#COPY_AGAIN[@]}))]}"
+  else
+    pair="${COPY_FIRST[$((RANDOM % ${#COPY_FIRST[@]}))]}"
+  fi
+  COPY_TITLE="${TITLE:-${pair%%|*}}"
+  COPY_BODY="${MESSAGE:-${pair#*|}}"
+}
+
+count_shown() {
+  local n f cur
+  cur="$(shown_file)"
+  for f in "$STATE_DIR"/shown-*; do
+    [ -e "$f" ] && [ "$f" != "$cur" ] && rm -f "$f"
+  done
+  n="$(cat "$cur" 2>/dev/null || echo 0)"
+  echo $((n + 1)) > "$(shown_file)"
+}
+
+# ---------------------------------------------------------------- permissions
+# Current permissions, read live from macOS by the app without prompting (app 1.4.0+);
+# otherwise the last values the app saw. Sets PERM_NOTIF (allowed|denied|not-asked),
+# PERM_STYLE (alert|banner|none) and PERM_LOC (allowed|denied|not-asked|off).
+PERM_NOTIF='' PERM_STYLE='' PERM_LOC=''
+read_permissions() {
+  local f="$STATE_DIR/permissions" av
+  PERM_NOTIF='' PERM_STYLE='' PERM_LOC=''
+  if [ -x "$NOTIFIER_APP/Contents/MacOS/CheckinNotifier" ]; then
+    av="$(app_version)"
+    if ! version_gt 1.4.0 "${av:-0}"; then
+      rm -f "$f"
+      open -W -n -g -a "$NOTIFIER_APP" --args perms --out "$f" >/dev/null 2>&1
+      [ -f "$f" ] && IFS=$'\t' read -r PERM_NOTIF PERM_STYLE PERM_LOC < "$f"
+    fi
+  fi
+  if [ -n "$PERM_NOTIF" ]; then
+    # keep the files used by the reminder in line with what macOS says now
+    case "$PERM_NOTIF" in
+      allowed) echo ok > "$STATE_DIR/notifier_status"; echo "$PERM_STYLE" > "$STATE_DIR/alert_style" ;;
+      denied)  echo denied > "$STATE_DIR/notifier_status" ;;
+    esac
+    # location allowed again in System Settings: forget the 6-hour pause
+    [ "$PERM_LOC" = allowed ] && grep -qsE '^(DENIED|DISABLED)' "$LOCATION_FILE" && rm -f "$LOCATION_FILE"
+    return 0
+  fi
+  case "$(cat "$STATE_DIR/notifier_status" 2>/dev/null)" in
+    ok)     PERM_NOTIF=allowed ;;
+    denied) PERM_NOTIF=denied ;;
+    *)      PERM_NOTIF=not-asked ;;
+  esac
+  PERM_STYLE="$(alert_style)"
+  case "$(cat "$STATE_DIR/location_status" 2>/dev/null)" in
+    OK)       PERM_LOC=allowed ;;
+    DENIED)   PERM_LOC=denied ;;
+    DISABLED) PERM_LOC=off ;;
+    *)        PERM_LOC=not-asked ;;
+  esac
+}
+
+# ---------------------------------------------------------------- reminder
+notifier_ok() {
+  [ -x "$NOTIFIER_APP/Contents/MacOS/CheckinNotifier" ] || return 1
+  # denied earlier: check again, they may have been allowed in System Settings since
+  grep -qs '^denied' "$STATE_DIR/notifier_status" && read_permissions
+  ! grep -qs '^denied' "$STATE_DIR/notifier_status"
+}
+
+remind() {
+  local reason="$1" answer
+  pick_copy
+  count_shown
+
+  if [ "$REMIND_STYLE" = banner ] && notifier_ok; then
+    open -n -g -a "$NOTIFIER_APP" --args post \
+      --title "$COPY_TITLE" --subtitle "$reason" --body "$COPY_BODY" \
+      --url "$CHECKIN_URL" --snooze "$SNOOZE_MINUTES" --cli "$BIN"
+    # waiting for an answer: don't show it again before SNOOZE_MINUTES
+    snooze "$SNOOZE_MINUTES"
+    log "notification sent ($reason)"
+    return
+  fi
+
+  answer="$(osascript - "$COPY_TITLE" "$COPY_BODY" "$reason" "$CHECKIN_URL" "$SNOOZE_MINUTES" 2>/dev/null <<'APPLESCRIPT'
+on run argv
+  set theTitle to item 1 of argv
+  set theMsg to item 2 of argv
+  set theReason to item 3 of argv
+  set theUrl to item 4 of argv
+  set snoozeLabel to "Later"
+  if theUrl is "" then
+    set btns to {snoozeLabel, "Already done"}
+    set defBtn to "Already done"
+  else
+    set btns to {snoozeLabel, "Already done", "Open Desk Booking"}
+    set defBtn to "Open Desk Booking"
+  end if
+  activate
+  try
+    set res to display dialog (theTitle & return & return & theMsg & return & return & theReason) with title "Check-in" buttons btns default button defBtn with icon note giving up after 600
+    if gave up of res then return "timeout"
+    return button returned of res
+  on error
+    return "cancel"
+  end try
+end run
+APPLESCRIPT
+)"
+
+  case "$answer" in
+    "Already done")      mark_done ;;
+    "Open Desk Booking") open "$CHECKIN_URL"; mark_done ;;
+    *)                   snooze "$SNOOZE_MINUTES"; log "snoozed for $SNOOZE_MINUTES min ($answer)" ;;
+  esac
+}
+
+# ---------------------------------------------------------------- commands
+cmd_check() {
+  maybe_auto_update
+  in_window  || return 0
+  is_done    && return 0
+  is_snoozed && return 0
+  at_office  || return 0
+  acquire_lock || return 0
+  trap release_lock EXIT
+  log "at the office ($OFFICE_REASON): showing the reminder"
+  remind "$OFFICE_REASON"
+}
+
+cmd_test() {
+  acquire_lock || { echo "A reminder is already open."; return 1; }
+  trap release_lock EXIT
+  at_office || OFFICE_REASON="Test"
+  remind "$OFFICE_REASON"
+}
+
+yn() { if "$@"; then echo "yes"; else echo "no"; fi; }
+
+describe_location() {
+  case "$LOC_STATUS" in
+    IN)        echo "at the office: Reply $LOC_OFFICE (${LOC_DIST} m, accuracy ±${LOC_ACC} m)" ;;
+    OUT)       echo "not at an office (nearest: Reply $LOC_OFFICE, ${LOC_DIST} m)" ;;
+    DENIED)    echo "permission denied (System Settings → Privacy & Security → Location Services → Check-in)" ;;
+    DISABLED)  echo "Location Services are off on this Mac" ;;
+    TIMEOUT)   echo "no answer (try again; Wi-Fi must be on)" ;;
+    ERROR)     echo "macOS could not determine the location (try again)" ;;
+    NOOFFICES) echo "office list missing (checkin-reminder update --force)" ;;
+    *)         echo "${LOC_STATUS:-unknown}" ;;
+  esac
+}
+
+cmd_where() {
+  location_available || { echo "Location not available (LOCATION_CHECK=0 or the notification app is missing)."; return 1; }
+  echo "Reading the location…"
+  refresh_location force
+  read_location
+  echo "Location: $(describe_location)"
+}
+
+cmd_status() {
+  local ifc a b c ssid office
+  read_permissions
+  ifc="$(wifi_iface)"
+  a="$(ssid_from_ipconfig "$ifc")"
+  b="$(ssid_from_networksetup "$ifc")"
+  c="$(ssid_from_profiler)"
+  ssid="$(current_ssid)"
+  if at_office; then office="yes"; else office="no"; fi
+
+  echo "checkin-reminder $VERSION"
+  echo
+  echo "Config:            $CONFIG_FILE $([ -f "$CONFIG_FILE" ] || echo '(not found, using defaults)')"
+  echo "Wi-Fi pattern:     ${SSID_PATTERN:-<off>}"
+  echo "DNS pattern:       ${DNS_DOMAIN_PATTERN:-<off>}  (VPN counts as office: $([ "$VPN_COUNTS_AS_OFFICE" = 1 ] && echo yes || echo no))"
+  echo "Check-in URL:      ${CHECKIN_URL:-<not set>}"
+  if [ "$REMIND_STYLE" = banner ]; then
+    if notifier_ok; then
+      echo "Reminder:          notification (permission: $(cat "$STATE_DIR/notifier_status" 2>/dev/null || echo 'not asked yet'), style: $(alert_style || echo '?'))"
+      [ "$(alert_style)" = banner ] && echo "                   ⚠️  Banner style: it disappears on its own. To keep it on screen: checkin-reminder notifications → Alerts"
+    elif [ -x "$NOTIFIER_APP/Contents/MacOS/CheckinNotifier" ]; then echo "Reminder:          window (notifications DENIED: System Settings → Notifications → Check-in)"
+    else echo "Reminder:          window (notification app not installed)"; fi
+  else
+    echo "Reminder:          window"
+  fi
+  echo "Updates:           ${REPO_RAW:-<not configured>} (auto: $([ "$AUTO_UPDATE" = 1 ] && echo yes || echo no))"
+  echo
+  echo "Wi-Fi interface:   $ifc"
+  echo "  ipconfig:        ${a:-—}"
+  echo "  networksetup:    ${b:-—}"
+  echo "  system_profiler: ${c:-—}"
+  echo "SSID used:         ${ssid:-<none / not readable>}"
+  echo "Default interface: $(default_iface)"
+  echo "DNS domains (domain interface):"
+  dns_domains | grep -v 'arpa ' | sed 's/^/  /'
+  echo
+  if location_available; then
+    read_location && echo "Location:          $(describe_location) [$(( $(file_age "$LOCATION_FILE") / 60 )) min ago]" \
+      || echo "Location:          not read yet (try: checkin-reminder where)"
+  else
+    echo "Location:          not used"
+  fi
+  echo "At the office now: $office ${OFFICE_REASON:+($OFFICE_REASON)}"
+  echo "Working hours:     $(yn in_window)"
+  echo "Checked in:        $(yn is_done)"
+  echo "Snoozed:           $(yn is_snoozed)"
+  if launchctl print "gui/$(id -u)/$APP_ID" >/dev/null 2>&1; then
+    echo "Service:           running"
+  else
+    echo "Service:           NOT running (run the installer again)"
+  fi
+
+  if [ "$a" = "<redacted>" ] && ! valid_ssid "$ssid" && [ -z "$DNS_DOMAIN_PATTERN" ]; then
+    echo
+    echo "⚠️  macOS hides the Wi-Fi name and DNS detection is off."
+    echo "    Set DNS_DOMAIN_PATTERN (checkin-reminder config) or run: sudo ipconfig setverbose 1"
+  fi
+}
+
+tilde() { case "$1" in "$HOME"/*) echo "~${1#"$HOME"}" ;; *) echo "$1" ;; esac; }
+
+# "1 2 3 4 5" → "Mon Tue Wed Thu Fri"
+day_names() {
+  local d out='' names=(- Mon Tue Wed Thu Fri Sat Sun)
+  for d in $WORKDAYS; do out="$out${out:+ }${names[d]:-?}"; done
+  echo "$out"
+}
+
+cmd_privacy() {
+  local notif loc net style
+  read_permissions
+  case "$PERM_STYLE" in alert) style=Alerts ;; banner) style=Banners ;; *) style=None ;; esac
+  case "$PERM_NOTIF" in
+    allowed) notif="allowed, style $style" ;;
+    denied)  notif="denied (reminders use a window instead)" ;;
+    *)       notif="not asked yet" ;;
+  esac
+  if [ "$LOCATION_CHECK" != 1 ]; then
+    loc="not used (LOCATION_CHECK=0)"
+  else
+    case "$PERM_LOC" in
+      allowed) loc="allowed, read only on $(day_names) ${START_HOUR}:00-${END_HOUR}:00, until you check in" ;;
+      denied)  loc="denied (the office is recognized from the network only)" ;;
+      off)     loc="Location Services are off on this Mac" ;;
+      *)       loc="not asked yet" ;;
+    esac
+  fi
+  if [ "$AUTO_UPDATE" = 1 ] && [ -n "$REPO_RAW" ]; then
+    net="Once a day it checks for a new version at
+  $REPO_RAW
+  A plain download: no account, no identifiers, nothing about you."
+  else
+    net="None in the background (automatic updates are off)."
+  fi
+
+  cat <<EOF
+Check-in Reminder $VERSION: what it can see and do on this Mac
+
+Permissions (macOS asks for these two only)
+  Notifications   $notif
+  Location        $loc
+  No access to files, contacts, calendar, camera, microphone, screen or
+  Accessibility, and no admin password. It never logs in to Desk Booking
+  and never checks in for you.
+
+Kept on this Mac only, never uploaded
+  Last location answer   at an office or not, and the nearest office
+                         (never your coordinates)
+  Today's state          checked in or snoozed
+  Log                    when reminders were shown, last $LOG_DAYS days
+  Files                  $(tilde "$STATE_DIR")
+                         $(tilde "$LOG_FILE")
+                         $(tilde "$CONFIG_DIR")
+
+Network
+  $net
+  Nothing else is sent anywhere.
+
+Background service
+  $APP_ID runs "checkin-reminder check" every 5 minutes and
+  when the network changes. It stops after a fraction of a second unless you're
+  at the office and haven't checked in yet.
+
+Review or change
+  System Settings → Notifications → Check-in
+  System Settings → Privacy & Security → Location Services → Check-in
+  System Settings → General → Login Items & Extensions → Allow in the Background
+    (the service is listed as "checkin-reminder" or "bash")
+  Remove everything: checkin-reminder uninstall --purge
+EOF
+}
+
+cmd_uninstall() {
+  launchctl bootout "gui/$(id -u)/$APP_ID" 2>/dev/null \
+    || launchctl unload "$PLIST" 2>/dev/null || true
+  rm -f "$PLIST"
+  rm -rf "$STATE_DIR"
+  rm -f "$LOG_FILE" "$HOME/Library/Logs/checkin-reminder.err.log"
+  security delete-generic-password -s "$APP_ID" -a token >/dev/null 2>&1 || true
+  if [ "${1:-}" = "--purge" ]; then rm -rf "$CONFIG_DIR"; fi
+  rm -rf "$NOTIFIER_APP" "$SHARE_DIR"
+  rm -f "$BIN"
+  echo "checkin-reminder uninstalled."
+  [ "${1:-}" = "--purge" ] || echo "(Your settings are still in $CONFIG_DIR: use 'uninstall --purge' to remove them.)"
+}
+
+cmd_help() {
+  cat <<EOF
+checkin-reminder $VERSION: reminds you to check in when you're at the office
+
+Commands:
+  status          what it detects (Wi-Fi, DNS, location, hours, state): useful for troubleshooting
+  privacy         permissions, what it keeps on this Mac, network connections
+  where           reads the location now and tells you which office you're at
+  notifications   opens the notification settings (style "Alerts" = stays on screen)
+  test            shows the reminder right away
+  done            marks today's check-in as done
+  snooze [min]    postpones the reminder
+  reset           clears today's state (done / snoozed)
+  config          opens the configuration file
+  log             shows the last lines of the log
+  update          updates to the latest version (--force to reinstall)
+  uninstall       uninstalls (add --purge to also remove your settings)
+  version         prints the version
+  check           (used by the background service) checks and, if needed, shows the reminder
+EOF
+}
+
+# The tests load the script as a library (CHECKIN_REMINDER_LIB=1) and call the functions directly
+[ -n "${CHECKIN_REMINDER_LIB:-}" ] && return 0
+
+case "${1:-check}" in
+  check)            cmd_check ;;
+  status|doctor)    cmd_status ;;
+  privacy|permissions) cmd_privacy ;;
+  where)            cmd_where ;;
+  notifications|notifiche)
+                    open_notification_settings
+                    echo "Choose the \"Alerts\" style: the notification stays on screen until you pick an action." ;;
+  test)             cmd_test ;;
+  done)             mark_done; echo "OK, today's check-in is marked as done." ;;
+  snooze)           snooze "${2:-$SNOOZE_MINUTES}"; log "snoozed for ${2:-$SNOOZE_MINUTES} min"; echo "OK, I'll remind you in ${2:-$SNOOZE_MINUTES} minutes." ;;
+  reset)            rm -f "$STATE_DIR"/done-* "$STATE_DIR"/shown-* "$STATE_DIR/snooze_until" "$STATE_DIR/location"; echo "Today's state cleared." ;;
+  config)           mkdir -p "$CONFIG_DIR"; [ -f "$CONFIG_FILE" ] || : > "$CONFIG_FILE"; open -t "$CONFIG_FILE" ;;
+  log)              tail -n 30 "$LOG_FILE" 2>/dev/null || echo "The log is empty." ;;
+  update|upgrade)   cmd_update "${2:-}" ;;
+  uninstall)        cmd_uninstall "${2:-}" ;;
+  version|-v|--version) echo "$VERSION" ;;
+  help|-h|--help)   cmd_help ;;
+  *)                cmd_help; exit 1 ;;
+esac

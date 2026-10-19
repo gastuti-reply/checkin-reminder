@@ -20,7 +20,7 @@
 ---
 
 > [!NOTE]
-> **Mac only for now** (macOS 11 or later, Apple Silicon and Intel). There is no Windows version yet: if you'd like to build one, pull requests are welcome.
+> **Mac only for now** (macOS 11 or later, Apple Silicon and Intel). There is no Windows version yet: if you'd like to build one, pull requests are welcome. On iPhone you can get a similar reminder with the Shortcuts app: see the [iPhone guide](docs/iphone-shortcuts.md).
 
 ## Why it exists
 
@@ -181,6 +181,9 @@ LOG_DAYS=30               # how many days the log keeps
 
 **Can my manager, HR or Reply see where I am through this tool?**
 No. Nothing leaves your Mac, and there is no server that could collect anything. The only record of your presence is the Desk Booking check-in you make yourself.
+
+**Is there an iPhone version?**
+Not as an app, but your iPhone can remind you when you arrive at the office with Apple's Shortcuts app, with nothing to install: follow the [iPhone guide](docs/iphone-shortcuts.md).
 
 **Do I have to allow location?**
 No. Without location you still get the reminder whenever the Mac is on the Reply network, over Wi-Fi or a cable. Location only helps when you use a different network at the office, such as a phone hotspot or guest Wi-Fi.
